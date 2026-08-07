@@ -10,9 +10,19 @@ suite('stripMarkdownForSpeech', () => {
 		assert.strictEqual(stripMarkdownForSpeech('Run `npm install` first.'), 'Run npm install first.');
 	});
 
-	test('strips fenced code blocks but keeps the code text', () => {
-		const input = 'Here:\n```ts\nconst x = 1;\n```\nDone.';
-		assert.strictEqual(stripMarkdownForSpeech(input), 'Here:\nconst x = 1;\nDone.');
+	test('replaces a fenced code block with a spoken language + line-count announcement', () => {
+		const input = 'Here:\n```typescript\nconst x = 1;\n```\nDone.';
+		assert.strictEqual(stripMarkdownForSpeech(input), 'Here:\nTypescript code block, 1 line.\nDone.');
+	});
+
+	test('pluralizes "lines" for a multi-line code block', () => {
+		const input = '```python\ndef foo():\n    return 1\n```';
+		assert.strictEqual(stripMarkdownForSpeech(input), 'Python code block, 2 lines.');
+	});
+
+	test('announces a fenced code block with no language tag as just "Code block"', () => {
+		const input = '```\nplain\n```';
+		assert.strictEqual(stripMarkdownForSpeech(input), 'Code block, 1 line.');
 	});
 
 	test('converts markdown links to their text', () => {

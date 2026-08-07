@@ -1,3 +1,12 @@
+function countCodeLines(code: string): number {
+	const trimmed = code.replace(/\n$/, '');
+	return trimmed.length === 0 ? 0 : trimmed.split('\n').length;
+}
+
+function capitalize(word: string): string {
+	return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
 /**
  * Strips common Markdown formatting from assistant text so it reads
  * cleanly as speech instead of being read aloud literally (e.g. "asterisk
@@ -6,8 +15,15 @@
 export function stripMarkdownForSpeech(text: string): string {
 	let result = text;
 
-	// Fenced code blocks: drop the fence markers, keep the code content.
-	result = result.replace(/```[^\n]*\n([\s\S]*?)```/g, (_match, code: string) => code.replace(/\n$/, ''));
+	// Fenced code blocks: reading raw code aloud verbatim is unpleasant to
+	// listen to, so replace the block with a short spoken announcement
+	// instead (e.g. "TypeScript code block, 12 lines.") using the fence's
+	// language tag when present.
+	result = result.replace(/```([^\n]*)\n([\s\S]*?)```/g, (_match, lang: string, code: string) => {
+		const lineCount = countCodeLines(code);
+		const label = lang.trim() ? `${capitalize(lang.trim())} code` : 'Code';
+		return `${label} block, ${lineCount} line${lineCount === 1 ? '' : 's'}.`;
+	});
 
 	// Inline code: keep the content, drop the backticks.
 	result = result.replace(/`([^`]+)`/g, '$1');

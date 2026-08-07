@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import { WordBoundary } from './edgeTts';
 
 export interface VoiceInfo {
 	name: string;
@@ -15,36 +16,89 @@ interface SpeakOptions {
 }
 
 /**
- * Owns a webview panel whose only job is to run the browser's speechSynthesis
- * API (VS Code's webview is Chromium-based, so this needs no extra
- * dependencies and works cross-platform). The panel is created lazily and
+ * Owns a webview panel that plays speech two ways: the browser's built-in
+ * speechSynthesis API (System engine, zero dependencies, instant, offline),
+ * or pre-synthesized audio bytes played through the Web Audio API (Enhanced
+ * engine — e.g. Microsoft Edge's neural TTS, fetched by the extension host
+ * and handed to the webview as base64). The panel is created lazily and
  * kept unobtrusive: it opens in the active editor group without stealing
  * focus, and retains its JS context while not the visible tab so speech
  * keeps playing in the background.
  *
- * Pause/resume delegate to the native speechSynthesis.pause()/resume() so
+ * Pause/resume delegate to native pause()/resume() for the System engine so
  * "picks up where it left off" is the browser's own behavior, not something
- * hand-rolled here. Rate/voice, however, are locked onto a
- * SpeechSynthesisUtterance the moment it starts — the API has no way to
- * retune audio already in flight — so a live settings change instead
- * cancels the in-progress utterance and immediately re-speaks just its
- * unspoken remainder (tracked via the `boundary` event) with the new
- * settings, which reads as a fast ramp rather than a hard wait-for-next-message.
+ * hand-rolled. Rate/voice for the System engine are locked onto a
+ * SpeechSynthesisUtterance the moment it starts — there's no way to retune
+ * audio already in flight — so a live settings change instead cancels the
+ * in-progress utterance and immediately re-speaks just its unspoken
+ * remainder (tracked via the `boundary` event) with the new settings.
+ *
+ * The Enhanced engine plays via an AudioContext + AudioBufferSourceNode
+ * rather than a plain `<audio>` element deliberately: Chromium's autoplay
+ * block on `<audio>.play()` requires a *fresh* user gesture for every call,
+ * which made every new Enhanced utterance need its own click. An
+ * AudioContext only needs `resume()` called once from a click — after that
+ * it stays in the "running" state for the rest of the panel's life, so
+ * later utterances play with no further clicks. The tradeoff: rate changes
+ * are still instant and live (`AudioBufferSourceNode.playbackRate`), but
+ * unlike `<audio>`'s `preservesPitch`, Web Audio API has no built-in pitch
+ * correction, so speeding up shifts pitch slightly.
  */
 export class SpeechPanel {
 	private panel: vscode.WebviewPanel | undefined;
 	private pendingVoicesResolve: ((voices: VoiceInfo[]) => void) | undefined;
 	private readonly stateEmitter = new vscode.EventEmitter<PlaybackState>();
+	private readonly logEmitter = new vscode.EventEmitter<string>();
+	private readonly needsUnlockEmitter = new vscode.EventEmitter<void>();
+	private readonly resynthesisEmitter = new vscode.EventEmitter<{ token: number; text: string }>();
 
 	readonly onDidChangeState = this.stateEmitter.event;
+	/** Diagnostics from inside the webview (e.g. audio playback errors) that wouldn't otherwise be visible. */
+	readonly onDidLog = this.logEmitter.event;
+	/** Fires when Chromium blocked audio playback pending a real click inside the panel. */
+	readonly onDidRequireUnlock = this.needsUnlockEmitter.event;
+	/** Fires when the webview needs fresh Enhanced audio for a mid-utterance voice hand-off (see notifyEnhancedVoiceChanged). */
+	readonly onDidRequestResynthesis = this.resynthesisEmitter.event;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
-		context.subscriptions.push(this.stateEmitter);
+		context.subscriptions.push(this.stateEmitter, this.logEmitter, this.needsUnlockEmitter, this.resynthesisEmitter);
+	}
+
+	/** Brings the panel to the foreground, e.g. so the user can click it to unlock audio playback. */
+	reveal(): void {
+		this.panel?.reveal(undefined, false);
 	}
 
 	speak(text: string, options: SpeakOptions = {}): void {
 		const panel = this.ensurePanel();
 		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice });
+	}
+
+	/** Queues pre-synthesized audio (base64-encoded) for playback, e.g. from the Enhanced engine. */
+	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[] = []): void {
+		const panel = this.ensurePanel();
+		void panel.webview.postMessage({ type: 'playAudio', base64: base64Data, rate, text, words });
+	}
+
+	/**
+	 * Tells the webview the Enhanced voice setting changed. If something is
+	 * actively playing an Enhanced utterance (not paused), it estimates how
+	 * far in it is, stops it, and requests fresh audio for just the
+	 * remainder via onDidRequestResynthesis — see class doc for why this
+	 * can't be instant like the System engine's restart.
+	 */
+	notifyEnhancedVoiceChanged(): void {
+		void this.panel?.webview.postMessage({ type: 'enhancedVoiceChanged' });
+	}
+
+	/** Supplies freshly-synthesized Enhanced audio for a hand-off requested via onDidRequestResynthesis. */
+	provideResynthesizedAudio(token: number, base64Data: string, rate: number | undefined, text: string, words: WordBoundary[] = []): void {
+		void this.panel?.webview.postMessage({ type: 'resynthesizedAudio', token, base64: base64Data, rate, text, words });
+	}
+
+	/** Supplies a System-voice fallback for a hand-off whose Enhanced resynthesis failed. */
+	provideResynthesizedFallback(token: number, text: string, rate: number | undefined, voice: string | undefined): void {
+		void this.panel?.webview.postMessage({ type: 'resynthesizedFallback', token, text, rate, voice });
 	}
 
 	pause(): void {
@@ -55,7 +109,7 @@ export class SpeechPanel {
 		void this.panel?.webview.postMessage({ type: 'resume' });
 	}
 
-	/** Applies a rate/voice change immediately, mid-utterance if something is speaking. */
+	/** Applies a rate/voice change immediately where possible (see class doc). */
 	updateSettings(options: SpeakOptions): void {
 		void this.panel?.webview.postMessage({ type: 'updateSettings', rate: options.rate, voice: options.voice });
 	}
@@ -98,13 +152,26 @@ export class SpeechPanel {
 		);
 		panel.webview.html = buildHtml();
 		panel.webview.onDidReceiveMessage(
-			(message: { type?: string; voices?: VoiceInfo[]; state?: PlaybackState }) => {
+			(message: {
+				type?: string;
+				voices?: VoiceInfo[];
+				state?: PlaybackState;
+				message?: string;
+				token?: number;
+				text?: string;
+			}) => {
 				if (message?.type === 'voices' && this.pendingVoicesResolve) {
 					const resolve = this.pendingVoicesResolve;
 					this.pendingVoicesResolve = undefined;
 					resolve(message.voices ?? []);
 				} else if (message?.type === 'playbackState' && message.state) {
 					this.stateEmitter.fire(message.state);
+				} else if (message?.type === 'log' && message.message) {
+					this.logEmitter.fire(message.message);
+				} else if (message?.type === 'needsUnlock') {
+					this.needsUnlockEmitter.fire();
+				} else if (message?.type === 'requestResynthesis' && message.token !== undefined && message.text) {
+					this.resynthesisEmitter.fire({ token: message.token, text: message.text });
 				}
 			},
 			undefined,
@@ -133,28 +200,212 @@ function buildHtml(): string {
 <style>
   body { font-family: var(--vscode-font-family, sans-serif); padding: 1rem; color: var(--vscode-foreground); }
   #status { opacity: 0.8; }
+  body.needs-unlock { cursor: pointer; }
+  #unlockPrompt {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.85rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--vscode-notificationsWarningIcon-foreground, #cca700);
+    border-radius: 4px;
+    background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.1));
+  }
+  body.needs-unlock #unlockPrompt { display: flex; }
+  #unlockPrompt span { flex: 1; }
+  #unlockPrompt button {
+    flex-shrink: 0;
+    padding: 0.4rem 1rem;
+    border: none;
+    border-radius: 3px;
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+    font-weight: 600;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+  #unlockPrompt button:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  #textDisplay {
+    margin-top: 0.85rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--vscode-panel-border, #3c3c3c);
+    border-radius: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+    line-height: 1.7;
+    font-size: 0.95rem;
+    white-space: pre-wrap;
+  }
+  #textDisplay:empty { display: none; }
+  #textDisplay .word.current-word {
+    background: var(--vscode-editor-selectionBackground, #264f78);
+    border-radius: 3px;
+  }
 </style>
 </head>
 <body>
 <p>Response Narrator is active.</p>
 <p id="status">Idle.</p>
+<div id="unlockPrompt">
+  <span>Would you like to enable Enhanced voice for Response Narrator?</span>
+  <button id="enableButton" type="button">Enable</button>
+</div>
+<div id="textDisplay"></div>
 <script nonce="${nonce}">
 (function () {
   const vscode = acquireVsCodeApi();
   const statusEl = document.getElementById('status');
+  const textDisplayEl = document.getElementById('textDisplay');
+
+  // Renders text as a sequence of per-word span elements (splitting on
+  // whitespace, preserving it as plain text nodes between them) so live
+  // highlighting is just toggling a class on the right span instead of
+  // re-rendering text on every word boundary.
+  function renderTextWithWordSpans(text) {
+    textDisplayEl.textContent = '';
+    const spans = [];
+    const wordRegex = /\\S+/g;
+    let match;
+    let lastIndex = 0;
+    while ((match = wordRegex.exec(text))) {
+      if (match.index > lastIndex) {
+        textDisplayEl.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      const span = document.createElement('span');
+      span.className = 'word';
+      span.textContent = match[0];
+      textDisplayEl.appendChild(span);
+      spans.push({ start: match.index, end: match.index + match[0].length, el: span });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      textDisplayEl.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+    return spans;
+  }
+
+  function setCurrentWordSpan(item, target) {
+    for (const s of item.wordSpans) {
+      if (s.el.classList.contains('current-word') && s !== target) {
+        s.el.classList.remove('current-word');
+      }
+    }
+    if (target && !target.el.classList.contains('current-word')) {
+      target.el.classList.add('current-word');
+      target.el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  // System engine: speechSynthesis's onboundary event gives a character
+  // index directly, so the matching span is found by offset comparison.
+  function highlightWordAt(item, charIndex) {
+    if (!item.wordSpans) {
+      return;
+    }
+    const target =
+      item.wordSpans.find((s) => charIndex >= s.start && charIndex < s.end) ||
+      item.wordSpans.find((s) => s.start >= charIndex);
+    setCurrentWordSpan(item, target);
+  }
+
+  // Enhanced engine: there's no per-word event during playback, only a list
+  // of {text, offsetSeconds, durationSeconds} timings fetched alongside the
+  // audio. item.words and item.wordSpans are built from the same source
+  // text and so line up index-for-index (barring a rare tokenization
+  // mismatch, guarded by clamping to the shorter of the two below); the
+  // current word is whichever one's offset the playback clock has reached.
+  function highlightWordAtTime(item, audioTimeSeconds) {
+    if (!item.words || !item.wordSpans) {
+      return;
+    }
+    const count = Math.min(item.words.length, item.wordSpans.length);
+    let index = -1;
+    for (let i = 0; i < count; i++) {
+      if (audioTimeSeconds >= item.words[i].offsetSeconds) {
+        index = i;
+      } else {
+        break;
+      }
+    }
+    if (index === -1) {
+      return;
+    }
+    setCurrentWordSpan(item, item.wordSpans[index]);
+  }
+
+  function clearTextDisplay() {
+    textDisplayEl.textContent = '';
+  }
 
   // Self-managed queue (rather than relying on speechSynthesis's own
   // multi-utterance queue) so a live settings change can splice a new
-  // remainder utterance in at the front instead of only affecting whatever
-  // hasn't started yet.
+  // remainder item in at the front instead of only affecting whatever
+  // hasn't started yet. Items are either { kind: 'tts', text, rate, voice }
+  // (System engine) or { kind: 'audio', text, base64, rate, buffer,
+  // pausedOffset } (Enhanced engine, played via Web Audio API — text is
+  // kept around so a mid-utterance voice change can estimate a remainder).
   const queue = [];
-  let current = null; // { text, rate, voice, charIndex }
+  let current = null;
+  let currentAudioSource = null;
+  let audioCtx = null;
   let paused = false;
-  // Bumped every time we deliberately move on to a new utterance, so a
-  // cancel()'d utterance's onend/onerror (which may fire asynchronously,
+  // Bumped every time we deliberately move on to a new item, so a
+  // cancel()'d/replaced item's onend/onerror (which may fire asynchronously,
   // after we've already started the next one ourselves) can recognize it's
   // stale and no-op instead of double-advancing the queue.
   let speakToken = 0;
+  // Set while waiting on a click (either the Enable button or anywhere else
+  // in the panel) to unlock the AudioContext — see playAudioItem.
+  let pendingUnlockRetry = null;
+  // Only announce the unlock prompt once per panel lifetime, same as the
+  // unlock itself — otherwise a chunked response stuck waiting on Enable
+  // would re-trigger it on every chunk and talk over itself.
+  let unlockAnnounced = false;
+  // Polls playback position for Enhanced-engine word highlighting, since
+  // (unlike SpeechSynthesisUtterance) Web Audio API playback has no
+  // per-word event to react to.
+  let highlightPollHandle = null;
+
+  function stopHighlightPoll() {
+    if (highlightPollHandle !== null) {
+      clearInterval(highlightPollHandle);
+      highlightPollHandle = null;
+    }
+  }
+
+  function startHighlightPoll(item, token) {
+    stopHighlightPoll();
+    if (!item.words || item.words.length === 0) {
+      return;
+    }
+    highlightPollHandle = setInterval(() => {
+      if (token !== speakToken || paused || !currentAudioSource) {
+        return;
+      }
+      const ctx = getAudioContext();
+      const rate = currentAudioSource.playbackRate.value || 1;
+      const audioTime = item.playOffsetAtStart + (ctx.currentTime - item.playStartedAt) * rate;
+      highlightWordAtTime(item, audioTime);
+    }, 80);
+  }
+
+  function getAudioContext() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return audioCtx;
+  }
+
+  function base64ToArrayBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
 
   function currentState() {
     if (paused) return 'paused';
@@ -171,7 +422,8 @@ function buildHtml(): string {
     vscode.postMessage({ type: 'playbackState', state: state });
   }
 
-  function buildUtterance(item, token) {
+  function startTts(item, token) {
+    item.wordSpans = renderTextWithWordSpans(item.text);
     const utterance = new SpeechSynthesisUtterance(item.text);
     if (item.rate) {
       utterance.rate = item.rate;
@@ -182,30 +434,127 @@ function buildHtml(): string {
         utterance.voice = match;
       }
     }
-    utterance.onboundary = (e) => { item.charIndex = e.charIndex; };
+    utterance.onboundary = (e) => {
+      if (token !== speakToken) {
+        return;
+      }
+      if (e.name && e.name !== 'word') {
+        return;
+      }
+      item.charIndex = e.charIndex;
+      highlightWordAt(item, e.charIndex);
+    };
     utterance.onstart = reportState;
     utterance.onend = () => { if (token === speakToken) { current = null; speakNext(); } };
     utterance.onerror = () => { if (token === speakToken) { current = null; speakNext(); } };
-    return utterance;
+    speechSynthesis.speak(utterance);
+  }
+
+  function playAudioItem(item, token, offsetSeconds) {
+    const ctx = getAudioContext();
+    const play = () => {
+      const source = ctx.createBufferSource();
+      source.buffer = item.buffer;
+      source.playbackRate.value = item.rate || 1;
+      source.connect(ctx.destination);
+      item.playStartedAt = ctx.currentTime;
+      item.playOffsetAtStart = offsetSeconds;
+      item.suppressAdvance = false;
+      source.onended = () => {
+        if (token === speakToken && !item.suppressAdvance) {
+          currentAudioSource = null;
+          current = null;
+          speakNext();
+        }
+      };
+      currentAudioSource = source;
+      source.start(0, offsetSeconds);
+      startHighlightPoll(item, token);
+      document.body.classList.remove('needs-unlock');
+      reportState();
+    };
+
+    if (ctx.state === 'suspended') {
+      // Only needs to happen once per panel lifetime — resume() moves the
+      // context to 'running' permanently, unlike a plain <audio> element
+      // which would re-require a gesture on every single play() call.
+      document.body.classList.add('needs-unlock');
+      vscode.postMessage({ type: 'needsUnlock' });
+      if (!unlockAnnounced) {
+        unlockAnnounced = true;
+        // Bypasses the app's own queue deliberately: the queue's current
+        // slot is already held by this blocked Enhanced item, so anything
+        // enqueued normally would just wait behind it forever instead of
+        // playing now, when it's actually needed. speechSynthesis itself
+        // isn't subject to the same autoplay block as AudioContext, so this
+        // plays immediately without needing its own unlock.
+        speechSynthesis.speak(new SpeechSynthesisUtterance(
+          'To use the Enhanced voice feature, click Enable on the Response Narrator panel.'
+        ));
+      }
+      // Idempotent regardless of which click fires it (the Enable button or
+      // anywhere else in the panel) — clears itself immediately so the
+      // other one becomes a no-op instead of resuming/playing twice.
+      const attemptUnlock = () => {
+        if (pendingUnlockRetry !== attemptUnlock) {
+          return;
+        }
+        pendingUnlockRetry = null;
+        document.body.removeEventListener('click', attemptUnlock);
+        ctx.resume().then(() => {
+          if (token === speakToken) {
+            play();
+          }
+        });
+      };
+      pendingUnlockRetry = attemptUnlock;
+      document.body.addEventListener('click', attemptUnlock, { once: true });
+    } else {
+      play();
+    }
+  }
+
+  async function startAudio(item, token) {
+    item.wordSpans = renderTextWithWordSpans(item.text || '');
+    try {
+      if (!item.buffer) {
+        const arrayBuffer = base64ToArrayBuffer(item.base64);
+        item.buffer = await getAudioContext().decodeAudioData(arrayBuffer);
+      }
+    } catch (err) {
+      vscode.postMessage({ type: 'log', message: 'Enhanced audio decode failed: ' + (err && err.message ? err.message : err) });
+      if (token === speakToken) { current = null; speakNext(); }
+      return;
+    }
+    if (token !== speakToken) {
+      return; // superseded (e.g. stopped) while decoding
+    }
+    playAudioItem(item, token, 0);
   }
 
   function speakNext() {
     speakToken++;
+    stopHighlightPoll();
     if (queue.length === 0) {
       current = null;
-      // Nothing left to pause/resume, however we got here.
+      currentAudioSource = null;
       paused = false;
+      clearTextDisplay();
       reportState();
       return;
     }
     current = queue.shift();
     current.charIndex = 0;
-    speechSynthesis.speak(buildUtterance(current, speakToken));
+    if (current.kind === 'audio') {
+      startAudio(current, speakToken);
+    } else {
+      startTts(current, speakToken);
+    }
     reportState();
   }
 
-  function enqueue(text, rate, voice) {
-    queue.push({ text: text, rate: rate, voice: voice, charIndex: 0 });
+  function enqueue(item) {
+    queue.push(item);
     if (!current && !paused) {
       speakNext();
     }
@@ -214,24 +563,104 @@ function buildHtml(): string {
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'speak') {
-      enqueue(message.text, message.rate, message.voice);
+      enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0 });
+    } else if (message.type === 'playAudio') {
+      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], buffer: null, pausedOffset: 0 });
+    } else if (message.type === 'enhancedVoiceChanged') {
+      if (current && current.kind === 'audio' && !paused) {
+        const ctx = getAudioContext();
+        const elapsed = currentAudioSource ? (ctx.currentTime - current.playStartedAt + current.playOffsetAtStart) : 0;
+        const duration = current.buffer ? current.buffer.duration : 0;
+        const text = current.text || '';
+        let charIndex = duration > 0 ? Math.round(text.length * Math.min(1, elapsed / duration)) : 0;
+        // Bias back to the start of the current word so a mistimed estimate
+        // repeats a word rather than risking skipping one.
+        const before = text.slice(0, charIndex).replace(/\\s+$/, '');
+        const lastSpace = before.lastIndexOf(' ');
+        charIndex = lastSpace >= 0 ? lastSpace + 1 : 0;
+        const remainder = text.slice(charIndex).trim();
+
+        // Anything already queued — fetched and waiting to play — still has
+        // the OLD voice baked into its audio, since it was synthesized
+        // before this change. Collect its original text too so the whole
+        // rest of the response gets re-spoken in the new voice, not just
+        // the one sentence that was interrupted.
+        const queuedText = queue.map((item) => item.text).filter(Boolean).join(' ');
+        const combined = [remainder, queuedText].filter((s) => s.length > 0).join(' ');
+
+        if (combined.length > 0) {
+          current.suppressAdvance = true;
+          if (currentAudioSource) {
+            try { currentAudioSource.stop(); } catch (e) { /* already stopped */ }
+            currentAudioSource = null;
+          }
+          queue.length = 0;
+          speakToken++; // invalidate anything still arriving from before this change
+          vscode.postMessage({ type: 'requestResynthesis', token: speakToken, text: combined });
+        }
+      }
+    } else if (message.type === 'resynthesizedAudio') {
+      if (message.token !== speakToken || !current) {
+        return; // superseded (stopped/replaced again) while resynthesizing
+      }
+      current.kind = 'audio';
+      current.text = message.text;
+      current.rate = message.rate;
+      current.base64 = message.base64;
+      current.words = message.words || [];
+      current.buffer = null;
+      startAudio(current, speakToken);
+    } else if (message.type === 'resynthesizedFallback') {
+      if (message.token !== speakToken || !current) {
+        return;
+      }
+      current.kind = 'tts';
+      current.text = message.text;
+      current.rate = message.rate;
+      current.voice = message.voice;
+      current.charIndex = 0;
+      startTts(current, speakToken);
     } else if (message.type === 'pause') {
-      speechSynthesis.pause();
+      if (current && current.kind === 'audio' && currentAudioSource) {
+        const ctx = getAudioContext();
+        current.pausedOffset = ctx.currentTime - current.playStartedAt + current.playOffsetAtStart;
+        current.suppressAdvance = true;
+        currentAudioSource.stop();
+        currentAudioSource = null;
+        stopHighlightPoll();
+      } else {
+        speechSynthesis.pause();
+      }
       paused = true;
       reportState();
     } else if (message.type === 'resume') {
-      speechSynthesis.resume();
+      if (current && current.kind === 'audio') {
+        playAudioItem(current, speakToken, current.pausedOffset || 0);
+      } else {
+        speechSynthesis.resume();
+      }
       paused = false;
       reportState();
     } else if (message.type === 'updateSettings') {
       queue.forEach((item) => {
         item.rate = message.rate;
-        item.voice = message.voice;
+        if (item.kind === 'tts') {
+          item.voice = message.voice;
+        }
       });
-      if (current) {
+      if (current && current.kind === 'audio') {
+        current.rate = message.rate;
+        if (currentAudioSource) {
+          // Live, sample-accurate — no restart needed (see class doc re: pitch).
+          currentAudioSource.playbackRate.value = message.rate || 1;
+        }
+        // Voice changes apply to the next Enhanced utterance instead, since
+        // a different voice means a different synthesized file that would
+        // need a fresh network fetch to swap in.
+      } else if (current && current.kind === 'tts') {
         const remaining = current.text.slice(current.charIndex || 0);
         if (remaining.trim().length > 0) {
-          queue.unshift({ text: remaining, rate: message.rate, voice: message.voice, charIndex: 0 });
+          queue.unshift({ kind: 'tts', text: remaining, rate: message.rate, voice: message.voice, charIndex: 0 });
         }
         const wasPaused = paused;
         speechSynthesis.cancel();
@@ -248,9 +677,18 @@ function buildHtml(): string {
       }
     } else if (message.type === 'stop') {
       queue.length = 0;
+      if (current) {
+        current.suppressAdvance = true;
+      }
       current = null;
       paused = false;
       speechSynthesis.cancel();
+      if (currentAudioSource) {
+        try { currentAudioSource.stop(); } catch (e) { /* already stopped */ }
+        currentAudioSource = null;
+      }
+      stopHighlightPoll();
+      clearTextDisplay();
       reportState();
     } else if (message.type === 'getVoices') {
       const collectVoices = () => new Promise((resolve) => {

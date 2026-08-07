@@ -3,6 +3,7 @@
   "displayName": "Response Narrator",
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
   "version": "0.0.1",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.125.0"
   },
@@ -32,6 +33,16 @@
         "title": "Response Narrator: Stop Speaking"
       }
     ],
+    "keybindings": [
+      {
+        "command": "response-narrator.togglePlayback",
+        "key": "ctrl+alt+p"
+      },
+      {
+        "command": "response-narrator.stopSpeaking",
+        "key": "ctrl+alt+s"
+      }
+    ],
     "configuration": {
       "title": "Response Narrator",
       "properties": {
@@ -55,10 +66,28 @@
           "maximum": 2,
           "description": "Speech rate for narrated responses (1 = normal speed)."
         },
+        "response-narrator.voiceEngine": {
+          "type": "string",
+          "enum": [
+            "system",
+            "enhanced"
+          ],
+          "enumDescriptions": [
+            "Built-in OS voices — instant, works offline.",
+            "Higher-quality neural voices via Microsoft Edge's online text-to-speech service (unofficial API; requires network access, with automatic fallback to System voices if it fails)."
+          ],
+          "default": "system",
+          "description": "Which text-to-speech engine to use."
+        },
         "response-narrator.voice": {
           "type": "string",
           "default": "",
-          "description": "Name of the speech synthesis voice to use. Leave empty for the system default. Use the 'Response Narrator: Select Voice' command to choose one."
+          "description": "Name of the System engine speech synthesis voice to use. Leave empty for the system default. Use the 'Response Narrator: Select Voice' command to choose one."
+        },
+        "response-narrator.enhancedVoice": {
+          "type": "string",
+          "default": "",
+          "description": "Short name of the Enhanced engine voice to use (e.g. en-US-AriaNeural). Leave empty for the default voice. Use the 'Response Narrator: Select Voice' command to choose one."
         }
       }
     }
@@ -72,17 +101,20 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.0.7"
   }
 }
