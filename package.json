@@ -2,7 +2,7 @@
   "name": "response-narrator",
   "displayName": "Response Narrator",
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "TitanRIU",
   "license": "MIT",
   "icon": "icon.png",
@@ -96,7 +96,7 @@
             "enhanced"
           ],
           "enumDescriptions": [
-            "Built-in OS voices — instant, works offline.",
+            "Built-in OS voices: instant, works offline.",
             "Higher-quality neural voices via Microsoft Edge's online text-to-speech service (unofficial API; requires network access, with automatic fallback to System voices if it fails)."
           ],
           "default": "system",

@@ -254,10 +254,10 @@ async function reportIssue(): Promise<void> {
 async function chooseEngine(): Promise<void> {
 	const engine = getVoiceEngine();
 	const options: { label: string; description: string; value: 'system' | 'enhanced' }[] = [
-		{ label: 'System', description: 'Built-in OS voices — instant, works offline', value: 'system' },
+		{ label: 'System', description: 'Built-in OS voices, instant, works offline', value: 'system' },
 		{
 			label: 'Enhanced',
-			description: "Higher-quality neural voices via Microsoft Edge's TTS service — requires network",
+			description: "Higher-quality neural voices via Microsoft Edge's TTS service, requires network",
 			value: 'enhanced'
 		}
 	];
@@ -420,7 +420,7 @@ async function selectEnhancedVoice(): Promise<void> {
 				description: `${locale} · ${voices.filter((v) => v.locale === locale).length} voice(s)`,
 				value: locale
 			})),
-			{ placeHolder: `Response Narrator: Region — ${localeDisplayName(pickedBaseLang.value)}` }
+			{ placeHolder: `Response Narrator: Region for ${localeDisplayName(pickedBaseLang.value)}` }
 		);
 		if (!pickedRegion) {
 			return;
@@ -439,7 +439,7 @@ async function selectEnhancedVoice(): Promise<void> {
 			description: `${v.locale} · ${v.gender}`,
 			value: v.name
 		})),
-		{ placeHolder: `Select an Enhanced voice — ${localeDisplayName(resolvedLocale)}` }
+		{ placeHolder: `Select an Enhanced voice for ${localeDisplayName(resolvedLocale)}` }
 	);
 	if (picked) {
 		await vscode.workspace
@@ -652,7 +652,7 @@ function updateMenuStatusBar(): void {
 	const engine = getVoiceEngine();
 	const voiceLabel =
 		engine === 'enhanced' ? getEnhancedVoiceSetting() || DEFAULT_ENHANCED_VOICE : getVoiceSetting() || 'System default';
-	menuStatusBarItem.tooltip = `Response Narrator settings — Playback: ${mode}, Engine: ${
+	menuStatusBarItem.tooltip = `Response Narrator settings: Playback: ${mode}, Engine: ${
 		engine === 'enhanced' ? 'Enhanced' : 'System'
 	}, Voice: ${voiceLabel}, Speed: ${getRate()}x`;
 }

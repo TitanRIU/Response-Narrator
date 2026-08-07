@@ -4,6 +4,16 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.4] - 2026-08-07
+
+### Added
+
+- README Requirements section (what Response Narrator needs to do anything, and how session discovery works across workspaces) and a Privacy section (what the Enhanced voice engine sends to Microsoft's service).
+
+### Changed
+
+- Removed em dashes from user-facing text throughout: README, IDEAS.md, package.json descriptions, and in-app QuickPick labels/tooltips.
+
 ## [0.1.3] - 2026-08-07
 
 ### Added
