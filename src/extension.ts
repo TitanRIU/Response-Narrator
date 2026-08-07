@@ -1,5 +1,6 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
-import { TranscriptWatcher, Utterance } from './transcriptWatcher';
+import { TranscriptWatcher, Utterance, getClaudeProjectsDir, encodeWorkspacePathAsProjectDirName } from './transcriptWatcher';
 import { SpeechPanel, PlaybackState } from './speechPanel';
 import { listEnhancedVoices, synthesizeSpeech, splitIntoSpeechChunks, DEFAULT_ENHANCED_VOICE, WordBoundary } from './edgeTts';
 
@@ -147,8 +148,27 @@ export function deactivate() {
 	speechPanel?.dispose();
 }
 
+/**
+ * Scopes watching to just the transcript directories for this window's own
+ * open workspace folders, rather than the globally most-recently-modified
+ * transcript across the whole machine — otherwise two VS Code windows each
+ * running Response Narrator would both narrate whichever project happens to
+ * be active elsewhere, reading the same response aloud twice. Falls back to
+ * watching everything under ~/.claude/projects when no folder is open (e.g.
+ * a single-file window), matching the old behavior.
+ */
+function getScopedTranscriptRoots(): string[] {
+	const folders = vscode.workspace.workspaceFolders;
+	if (!folders || folders.length === 0) {
+		return [getClaudeProjectsDir()];
+	}
+	return folders.map((folder) =>
+		path.join(getClaudeProjectsDir(), encodeWorkspacePathAsProjectDirName(folder.uri.fsPath))
+	);
+}
+
 async function startWatching(): Promise<void> {
-	const newWatcher = new TranscriptWatcher();
+	const newWatcher = new TranscriptWatcher(getScopedTranscriptRoots());
 	resetResponseBuffers();
 
 	newWatcher.on('utterance', (utterance: Utterance) => {
@@ -178,7 +198,7 @@ async function startWatching(): Promise<void> {
 	const started = await newWatcher.start();
 	if (!started) {
 		void vscode.window.showWarningMessage(
-			'Response Narrator: no Claude Code transcripts found under ~/.claude/projects.'
+			'Response Narrator: no Claude Code transcripts found for this workspace yet.'
 		);
 		return;
 	}

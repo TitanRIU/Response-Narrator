@@ -17,6 +17,20 @@ export function getClaudeProjectsDir(): string {
 	return path.join(os.homedir(), '.claude', 'projects');
 }
 
+/**
+ * Mirrors Claude Code's own project-directory naming convention, so a VS
+ * Code workspace folder's path can be matched to its corresponding
+ * transcript directory: the drive letter (if any) is lowercased, and each
+ * path separator/colon becomes a literal dash; everything else, including
+ * case, is preserved. E.g. "C:\Foo\Bar" -> "c--Foo-Bar".
+ */
+export function encodeWorkspacePathAsProjectDirName(workspacePath: string): string {
+	const withLowerDrive = /^[A-Za-z]:/.test(workspacePath)
+		? workspacePath[0].toLowerCase() + workspacePath.slice(1)
+		: workspacePath;
+	return withLowerDrive.replace(/[:\\/]/g, '-');
+}
+
 async function findAllTranscriptFiles(dir: string): Promise<string[]> {
 	let entries: fs.Dirent[];
 	try {
@@ -36,18 +50,21 @@ async function findAllTranscriptFiles(dir: string): Promise<string[]> {
 	return results;
 }
 
-export async function findLatestTranscriptFile(rootDir: string): Promise<string | undefined> {
-	const files = await findAllTranscriptFiles(rootDir);
+export async function findLatestTranscriptFile(rootDirs: string | string[]): Promise<string | undefined> {
+	const dirs = Array.isArray(rootDirs) ? rootDirs : [rootDirs];
 	let latest: { file: string; mtimeMs: number } | undefined;
-	for (const file of files) {
-		let stat: fs.Stats;
-		try {
-			stat = await fsp.stat(file);
-		} catch {
-			continue;
-		}
-		if (!latest || stat.mtimeMs > latest.mtimeMs) {
-			latest = { file, mtimeMs: stat.mtimeMs };
+	for (const dir of dirs) {
+		const files = await findAllTranscriptFiles(dir);
+		for (const file of files) {
+			let stat: fs.Stats;
+			try {
+				stat = await fsp.stat(file);
+			} catch {
+				continue;
+			}
+			if (!latest || stat.mtimeMs > latest.mtimeMs) {
+				latest = { file, mtimeMs: stat.mtimeMs };
+			}
 		}
 	}
 	return latest?.file;
@@ -55,9 +72,13 @@ export async function findLatestTranscriptFile(rootDir: string): Promise<string 
 
 /**
  * Tails the most-recently-modified Claude Code transcript under a projects
- * root, emitting an 'utterance' event for each new assistant text block as
- * it's appended. Never replays existing file content — only what's written
- * after watching starts (or after switching to a newly-active session).
+ * root (or roots — see encodeWorkspacePathAsProjectDirName, used to scope
+ * this to only the calling VS Code window's own workspace folders, so two
+ * windows watching different projects don't both narrate whichever one
+ * happens to be globally most recent), emitting an 'utterance' event for
+ * each new assistant text block as it's appended. Never replays existing
+ * file content — only what's written after watching starts (or after
+ * switching to a newly-active session).
  */
 export declare interface TranscriptWatcher {
 	on(event: 'utterance', listener: (utterance: Utterance) => void): this;
@@ -67,7 +88,7 @@ export declare interface TranscriptWatcher {
 }
 
 export class TranscriptWatcher extends EventEmitter {
-	private readonly rootDir: string;
+	private readonly rootDirs: string[];
 	private currentFile: string | undefined;
 	private offset = 0;
 	private pendingPartialLine = '';
@@ -76,15 +97,15 @@ export class TranscriptWatcher extends EventEmitter {
 	private reading = false;
 	private stopped = true;
 
-	constructor(rootDir: string = getClaudeProjectsDir()) {
+	constructor(rootDirs: string | string[] = getClaudeProjectsDir()) {
 		super();
-		this.rootDir = rootDir;
+		this.rootDirs = Array.isArray(rootDirs) ? rootDirs : [rootDirs];
 	}
 
 	/** Returns false if no transcript files were found to watch. */
 	async start(): Promise<boolean> {
 		this.stopped = false;
-		const latest = await findLatestTranscriptFile(this.rootDir);
+		const latest = await findLatestTranscriptFile(this.rootDirs);
 		if (!latest) {
 			this.stopped = true;
 			return false;
@@ -144,7 +165,7 @@ export class TranscriptWatcher extends EventEmitter {
 		if (this.stopped) {
 			return;
 		}
-		const latest = await findLatestTranscriptFile(this.rootDir);
+		const latest = await findLatestTranscriptFile(this.rootDirs);
 		if (latest && latest !== this.currentFile) {
 			await this.switchTo(latest);
 		}

@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.6] - 2026-08-07
+
+### Fixed
+
+- Response Narrator now scopes watching to the current window's own open workspace folder(s) instead of the globally most-recently-active Claude Code session across the whole machine. Fixes responses being read aloud twice when multiple VS Code windows are open at once, each narrating whichever project happened to be globally most recent.
+
 ## [0.1.5] - 2026-08-07
 
 ### Fixed
