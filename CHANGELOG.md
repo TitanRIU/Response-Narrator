@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.1] - 2026-08-07
+
+### Added
+
+- README screenshots: the panel with live word highlighting, the status bar controls, and the settings menu.
+
 ## [0.1.0] - 2026-08-07
 
 ### Added
