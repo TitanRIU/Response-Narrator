@@ -8,6 +8,8 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 
 ![Play/Pause/Stop controls in the status bar](images/screenshot-statusbar.png)
 
+![Settings menu: Playback mode, Voice Engine, Voice, and Speed](images/screenshot-Menu.png)
+
 ## Features
 
 - Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode.
