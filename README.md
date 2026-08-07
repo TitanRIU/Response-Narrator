@@ -4,6 +4,10 @@ Response Narrator is a VS Code extension that reads new Claude Code assistant re
 
 If you find this useful, consider [sponsoring on GitHub](https://github.com/sponsors/TitanRIU).
 
+![Response Narrator reading a response aloud, with live word highlighting](images/screenshot-panel.png)
+
+![Play/Pause/Stop controls in the status bar](images/screenshot-statusbar.png)
+
 ## Features
 
 - Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode.
