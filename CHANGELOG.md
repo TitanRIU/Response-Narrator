@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.2] - 2026-08-07
+
+### Added
+
+- Marketplace search keywords (claude code, text-to-speech, accessibility, etc.) for better discoverability on specific-phrase searches.
+
 ## [0.1.1] - 2026-08-07
 
 ### Added
