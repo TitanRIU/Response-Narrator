@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.5] - 2026-08-07
+
+### Fixed
+
+- Clicking Enable before the spoken "click Enable" announcement finished could leave it playing on top of the Enhanced audio that had just started. The announcement is now cut off immediately when Enable is clicked.
+
 ## [0.1.4] - 2026-08-07
 
 ### Added

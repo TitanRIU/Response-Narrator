@@ -501,6 +501,12 @@ function buildHtml(): string {
         }
         pendingUnlockRetry = null;
         document.body.removeEventListener('click', attemptUnlock);
+        // Cuts off the spoken announcement immediately if Enable is clicked
+        // before it finishes, so it can't overlap with the Enhanced audio
+        // that's about to start. Safe to call unconditionally here: the
+        // app's own queue can't have a legitimate System-voice item playing
+        // at this point, since current is the blocked Enhanced item.
+        speechSynthesis.cancel();
         ctx.resume().then(() => {
           if (token === speakToken) {
             play();
