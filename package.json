@@ -9,15 +9,59 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "response-narrator.helloWorld",
-        "title": "Hello World"
+        "command": "response-narrator.openMenu",
+        "title": "Response Narrator: Open Menu"
+      },
+      {
+        "command": "response-narrator.togglePlayback",
+        "title": "Response Narrator: Play/Pause"
+      },
+      {
+        "command": "response-narrator.selectVoice",
+        "title": "Response Narrator: Select Voice"
+      },
+      {
+        "command": "response-narrator.stopSpeaking",
+        "title": "Response Narrator: Stop Speaking"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Response Narrator",
+      "properties": {
+        "response-narrator.playbackMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "manual"
+          ],
+          "enumDescriptions": [
+            "Read new responses aloud automatically as they arrive.",
+            "Only read a response when you press play."
+          ],
+          "default": "auto",
+          "description": "Whether responses are read automatically or only on demand."
+        },
+        "response-narrator.rate": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 2,
+          "description": "Speech rate for narrated responses (1 = normal speed)."
+        },
+        "response-narrator.voice": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the speech synthesis voice to use. Leave empty for the system default. Use the 'Response Narrator: Select Voice' command to choose one."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
