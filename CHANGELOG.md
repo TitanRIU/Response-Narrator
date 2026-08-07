@@ -18,3 +18,4 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Natural sentence- and pause-based chunking, so long responses split at sentence or comma boundaries instead of mid-word.
 - Code blocks are announced (e.g. "TypeScript code block, 12 lines") instead of being read aloud character by character.
 - One-time in-panel prompt (with a spoken heads-up) to enable Enhanced voice playback, satisfying the browser's autoplay policy.
+- "Report Issue / Give Feedback" menu entry and command, linking to GitHub Issues.

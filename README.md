@@ -17,3 +17,7 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 ## Status
 
 Actively developed and working. See [IDEAS.md](IDEAS.md) for what's being considered next.
+
+## Feedback
+
+Found a bug or have a feature request? [Open an issue](https://github.com/TitanRIU/Response-Narrator/issues) — or use the "Response Narrator: Report Issue / Give Feedback" entry in the extension's own menu, which opens the same page. For more open-ended ideas or questions, use [Discussions](https://github.com/TitanRIU/Response-Narrator/discussions) instead.

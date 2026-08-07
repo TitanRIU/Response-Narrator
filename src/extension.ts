@@ -5,6 +5,7 @@ import { listEnhancedVoices, synthesizeSpeech, splitIntoSpeechChunks, DEFAULT_EN
 
 const CONFIG_SECTION = 'response-narrator';
 const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const ISSUES_URL = 'https://github.com/TitanRIU/Response-Narrator/issues';
 // Cap on simultaneous Enhanced synthesis requests when speaking a
 // chunked response. Firing every chunk's request at once for a long
 // response appears to trigger Microsoft's TTS service to drop some of
@@ -97,6 +98,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('response-narrator.togglePlayback', togglePlayback),
 		vscode.commands.registerCommand('response-narrator.selectVoice', selectVoice),
 		vscode.commands.registerCommand('response-narrator.stopSpeaking', stopSpeaking),
+		vscode.commands.registerCommand('response-narrator.reportIssue', reportIssue),
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (!e.affectsConfiguration(CONFIG_SECTION)) {
 				return;
@@ -224,7 +226,8 @@ async function openMenu(): Promise<void> {
 			{ id: 'playback', label: '$(gear) Playback', description: getPlaybackMode() === 'auto' ? 'Auto' : 'Manual' },
 			{ id: 'engine', label: '$(rocket) Voice Engine', description: engine === 'enhanced' ? 'Enhanced' : 'System' },
 			{ id: 'voice', label: '$(mic) Voice', description: voiceLabel },
-			{ id: 'speed', label: '$(zap) Speed', description: `${getRate()}x` }
+			{ id: 'speed', label: '$(zap) Speed', description: `${getRate()}x` },
+			{ id: 'feedback', label: '$(comment) Report Issue / Give Feedback', description: 'Opens GitHub Issues' }
 		],
 		{ placeHolder: 'Response Narrator settings' }
 	);
@@ -239,7 +242,13 @@ async function openMenu(): Promise<void> {
 		await selectVoice();
 	} else if (picked.id === 'speed') {
 		await chooseSpeed();
+	} else if (picked.id === 'feedback') {
+		await reportIssue();
 	}
+}
+
+async function reportIssue(): Promise<void> {
+	await vscode.env.openExternal(vscode.Uri.parse(ISSUES_URL));
 }
 
 async function chooseEngine(): Promise<void> {
