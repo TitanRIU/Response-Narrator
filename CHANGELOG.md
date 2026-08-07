@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.7] - 2026-08-07
+
+### Changed
+
+- Bundled the extension with esbuild instead of shipping `node_modules` unbundled. Package size dropped from 452 files / 852 KB to 12 files / 172 KB, and the "you should bundle your extension" warning from `vsce` is gone. No functional changes; verified via full test suite and a real F5 launch.
+
 ## [0.1.6] - 2026-08-07
 
 ### Fixed
