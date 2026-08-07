@@ -4,6 +4,10 @@
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
   "version": "0.0.1",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TitanRIU/Response-Narrator.git"
+  },
   "engines": {
     "vscode": "^1.125.0"
   },
