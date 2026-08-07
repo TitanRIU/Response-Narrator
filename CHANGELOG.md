@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.3] - 2026-08-07
+
+### Added
+
+- README "Getting Started" section walking through initial usage: status bar controls, settings menu, playback modes, and the one-time Enhanced voice unlock step.
+
 ## [0.1.2] - 2026-08-07
 
 ### Added

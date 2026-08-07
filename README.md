@@ -10,6 +10,15 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 
 ![Settings menu: Playback mode, Voice Engine, Voice, and Speed](images/screenshot-Menu.png)
 
+## Getting Started
+
+1. Install the extension — it activates automatically and starts watching your Claude Code session transcripts. No setup required.
+2. By default it's in **Auto** mode: new Claude Code responses are read aloud as they arrive.
+3. Look for the controls in the status bar (bottom right of the window): **Narrator** (opens the settings menu), a **Stop** button, and a **Play/Pause** button — or use the keyboard shortcuts, `Ctrl+Alt+P` to play/pause and `Ctrl+Alt+S` to stop.
+4. Click **Narrator** in the status bar to open the settings menu, where you can switch to **Manual** mode (only reads a response when you press play), change the **Voice Engine** (System or Enhanced), pick a **Voice**, or adjust **Speed**.
+5. In Manual mode, press Play to hear the current or most recent response on demand.
+6. The first time you use the **Enhanced** voice engine, you'll see a one-time prompt in the Response Narrator panel — click **Enable** there to unlock audio playback (a one-time browser security requirement, not needed again after that).
+
 ## Features
 
 - Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode.
