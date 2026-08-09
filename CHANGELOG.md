@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.8] - 2026-08-08
+
+### Fixed
+
+- Enhanced voice no longer rises in pitch at faster playback speeds. Replaced the AudioBufferSourceNode-based playback (a naive resample, with no pitch correction) with a single persistent `<audio>` element with `preservesPitch` enabled, routed into the same AudioContext graph via `createMediaElementSource` so the one-click autoplay unlock still applies to every later utterance. Native `.currentTime`/`.pause()`/`.play()` also replace the old manual offset-tracking used to simulate pause/resume and word-highlight timing.
+
 ## [0.1.7] - 2026-08-07
 
 ### Changed

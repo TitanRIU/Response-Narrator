@@ -2,7 +2,7 @@
   "name": "response-narrator",
   "displayName": "Response Narrator",
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "TitanRIU",
   "license": "MIT",
   "icon": "icon.png",

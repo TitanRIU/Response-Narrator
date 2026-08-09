@@ -33,16 +33,20 @@ interface SpeakOptions {
  * in-progress utterance and immediately re-speaks just its unspoken
  * remainder (tracked via the `boundary` event) with the new settings.
  *
- * The Enhanced engine plays via an AudioContext + AudioBufferSourceNode
- * rather than a plain `<audio>` element deliberately: Chromium's autoplay
- * block on `<audio>.play()` requires a *fresh* user gesture for every call,
- * which made every new Enhanced utterance need its own click. An
- * AudioContext only needs `resume()` called once from a click — after that
- * it stays in the "running" state for the rest of the panel's life, so
- * later utterances play with no further clicks. The tradeoff: rate changes
- * are still instant and live (`AudioBufferSourceNode.playbackRate`), but
- * unlike `<audio>`'s `preservesPitch`, Web Audio API has no built-in pitch
- * correction, so speeding up shifts pitch slightly.
+ * The Enhanced engine plays through a single persistent `<audio>` element
+ * routed into the AudioContext graph via `createMediaElementSource` (see
+ * getSharedAudioElement), rather than decoding each response into an
+ * AudioBuffer and playing it through a fresh AudioBufferSourceNode. Two
+ * reasons: `<audio>` exposes `preservesPitch`, so speeding up playback no
+ * longer raises pitch the way AudioBufferSourceNode's naive resampling did;
+ * and routing it through the same AudioContext that gets unlocked by one
+ * click keeps the one-time-unlock behavior — once `ctx.resume()` has
+ * succeeded from a real click, calling `.play()` on the connected element
+ * keeps working with no further clicks, the same as raw buffer playback
+ * did. Rate changes are still instant and live (`audioEl.playbackRate`),
+ * and native `.currentTime`/`.pause()`/`.play()` replace the manual
+ * playStartedAt/playOffsetAtStart bookkeeping the old approach needed to
+ * simulate pause/resume and word-highlight timing.
  */
 export class SpeechPanel {
 	private panel: vscode.WebviewPanel | undefined;
@@ -195,7 +199,7 @@ function buildHtml(): string {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; media-src data:;">
 <title>Response Narrator</title>
 <style>
   body { font-family: var(--vscode-font-family, sans-serif); padding: 1rem; color: var(--vscode-foreground); }
@@ -343,13 +347,15 @@ function buildHtml(): string {
   // multi-utterance queue) so a live settings change can splice a new
   // remainder item in at the front instead of only affecting whatever
   // hasn't started yet. Items are either { kind: 'tts', text, rate, voice }
-  // (System engine) or { kind: 'audio', text, base64, rate, buffer,
-  // pausedOffset } (Enhanced engine, played via Web Audio API — text is
+  // (System engine) or { kind: 'audio', text, base64, rate, pausedOffset }
+  // (Enhanced engine, played through the shared <audio> element — text is
   // kept around so a mid-utterance voice change can estimate a remainder).
   const queue = [];
   let current = null;
-  let currentAudioSource = null;
   let audioCtx = null;
+  // Single <audio> element reused for every Enhanced item, routed through
+  // audioCtx via createMediaElementSource — see getSharedAudioElement.
+  let audioEl = null;
   let paused = false;
   // Bumped every time we deliberately move on to a new item, so a
   // cancel()'d/replaced item's onend/onerror (which may fire asynchronously,
@@ -381,13 +387,14 @@ function buildHtml(): string {
       return;
     }
     highlightPollHandle = setInterval(() => {
-      if (token !== speakToken || paused || !currentAudioSource) {
+      if (token !== speakToken || paused || !audioEl) {
         return;
       }
-      const ctx = getAudioContext();
-      const rate = currentAudioSource.playbackRate.value || 1;
-      const audioTime = item.playOffsetAtStart + (ctx.currentTime - item.playStartedAt) * rate;
-      highlightWordAtTime(item, audioTime);
+      // audioEl.currentTime already reflects playbackRate correctly on its
+      // own — unlike AudioBufferSourceNode, which had no exposed playback
+      // position at all and needed elapsed-time-times-rate math against
+      // AudioContext's own clock to approximate it.
+      highlightWordAtTime(item, audioEl.currentTime);
     }, 80);
   }
 
@@ -398,13 +405,24 @@ function buildHtml(): string {
     return audioCtx;
   }
 
-  function base64ToArrayBuffer(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+  // Created once and reused for every Enhanced item (swapping .src rather
+  // than creating a new element/node per item — a MediaElementAudioSourceNode
+  // can only ever be created once per element). Routing it through the same
+  // AudioContext that gets unlocked by one click is what lets later
+  // utterances play with no further clicks, the same as the old raw-buffer
+  // approach — see class doc.
+  function getSharedAudioElement() {
+    if (!audioEl) {
+      audioEl = new Audio();
+      audioEl.preservesPitch = true;
+      if ('webkitPreservesPitch' in audioEl) {
+        audioEl.webkitPreservesPitch = true;
+      }
+      const ctx = getAudioContext();
+      const mediaSourceNode = ctx.createMediaElementSource(audioEl);
+      mediaSourceNode.connect(ctx.destination);
     }
-    return bytes.buffer;
+    return audioEl;
   }
 
   function currentState() {
@@ -452,32 +470,63 @@ function buildHtml(): string {
 
   function playAudioItem(item, token, offsetSeconds) {
     const ctx = getAudioContext();
+    const el = getSharedAudioElement();
     const play = () => {
-      const source = ctx.createBufferSource();
-      source.buffer = item.buffer;
-      source.playbackRate.value = item.rate || 1;
-      source.connect(ctx.destination);
-      item.playStartedAt = ctx.currentTime;
-      item.playOffsetAtStart = offsetSeconds;
       item.suppressAdvance = false;
-      source.onended = () => {
+      el.onended = () => {
         if (token === speakToken && !item.suppressAdvance) {
-          currentAudioSource = null;
           current = null;
           speakNext();
         }
       };
-      currentAudioSource = source;
-      source.start(0, offsetSeconds);
-      startHighlightPoll(item, token);
-      document.body.classList.remove('needs-unlock');
-      reportState();
+      // Waits for loadedmetadata (rather than seeking/playing immediately)
+      // so the offsetSeconds seek below is honored reliably once duration
+      // is actually known, and so a load failure is caught distinctly from
+      // a playback failure.
+      const onReady = () => {
+        cleanup();
+        if (token !== speakToken) {
+          return;
+        }
+        el.playbackRate = item.rate || 1;
+        if (offsetSeconds > 0) {
+          el.currentTime = offsetSeconds;
+        }
+        startHighlightPoll(item, token);
+        document.body.classList.remove('needs-unlock');
+        reportState();
+        el.play().catch((err) => {
+          if (token !== speakToken) {
+            return;
+          }
+          vscode.postMessage({ type: 'log', message: 'Enhanced audio playback failed: ' + (err && err.message ? err.message : err) });
+          current = null;
+          speakNext();
+        });
+      };
+      const onLoadError = () => {
+        cleanup();
+        if (token !== speakToken) {
+          return;
+        }
+        vscode.postMessage({ type: 'log', message: 'Enhanced audio failed to load' + (el.error ? ': ' + el.error.message : '') });
+        current = null;
+        speakNext();
+      };
+      function cleanup() {
+        el.removeEventListener('loadedmetadata', onReady);
+        el.removeEventListener('error', onLoadError);
+      }
+      el.addEventListener('loadedmetadata', onReady, { once: true });
+      el.addEventListener('error', onLoadError, { once: true });
+      el.src = 'data:audio/mpeg;base64,' + item.base64;
     };
 
     if (ctx.state === 'suspended') {
       // Only needs to happen once per panel lifetime — resume() moves the
-      // context to 'running' permanently, unlike a plain <audio> element
-      // which would re-require a gesture on every single play() call.
+      // context to 'running' permanently, and el.play() keeps working with
+      // no further clicks as long as el stays routed through this same
+      // context (see getSharedAudioElement / class doc).
       document.body.classList.add('needs-unlock');
       vscode.postMessage({ type: 'needsUnlock' });
       if (!unlockAnnounced) {
@@ -520,21 +569,8 @@ function buildHtml(): string {
     }
   }
 
-  async function startAudio(item, token) {
+  function startAudio(item, token) {
     item.wordSpans = renderTextWithWordSpans(item.text || '');
-    try {
-      if (!item.buffer) {
-        const arrayBuffer = base64ToArrayBuffer(item.base64);
-        item.buffer = await getAudioContext().decodeAudioData(arrayBuffer);
-      }
-    } catch (err) {
-      vscode.postMessage({ type: 'log', message: 'Enhanced audio decode failed: ' + (err && err.message ? err.message : err) });
-      if (token === speakToken) { current = null; speakNext(); }
-      return;
-    }
-    if (token !== speakToken) {
-      return; // superseded (e.g. stopped) while decoding
-    }
     playAudioItem(item, token, 0);
   }
 
@@ -543,7 +579,6 @@ function buildHtml(): string {
     stopHighlightPoll();
     if (queue.length === 0) {
       current = null;
-      currentAudioSource = null;
       paused = false;
       clearTextDisplay();
       reportState();
@@ -571,12 +606,11 @@ function buildHtml(): string {
     if (message.type === 'speak') {
       enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0 });
     } else if (message.type === 'playAudio') {
-      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], buffer: null, pausedOffset: 0 });
+      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0 });
     } else if (message.type === 'enhancedVoiceChanged') {
       if (current && current.kind === 'audio' && !paused) {
-        const ctx = getAudioContext();
-        const elapsed = currentAudioSource ? (ctx.currentTime - current.playStartedAt + current.playOffsetAtStart) : 0;
-        const duration = current.buffer ? current.buffer.duration : 0;
+        const elapsed = audioEl ? audioEl.currentTime : 0;
+        const duration = audioEl && Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
         const text = current.text || '';
         let charIndex = duration > 0 ? Math.round(text.length * Math.min(1, elapsed / duration)) : 0;
         // Bias back to the start of the current word so a mistimed estimate
@@ -596,9 +630,8 @@ function buildHtml(): string {
 
         if (combined.length > 0) {
           current.suppressAdvance = true;
-          if (currentAudioSource) {
-            try { currentAudioSource.stop(); } catch (e) { /* already stopped */ }
-            currentAudioSource = null;
+          if (audioEl) {
+            audioEl.pause();
           }
           queue.length = 0;
           speakToken++; // invalidate anything still arriving from before this change
@@ -614,7 +647,6 @@ function buildHtml(): string {
       current.rate = message.rate;
       current.base64 = message.base64;
       current.words = message.words || [];
-      current.buffer = null;
       startAudio(current, speakToken);
     } else if (message.type === 'resynthesizedFallback') {
       if (message.token !== speakToken || !current) {
@@ -627,12 +659,12 @@ function buildHtml(): string {
       current.charIndex = 0;
       startTts(current, speakToken);
     } else if (message.type === 'pause') {
-      if (current && current.kind === 'audio' && currentAudioSource) {
-        const ctx = getAudioContext();
-        current.pausedOffset = ctx.currentTime - current.playStartedAt + current.playOffsetAtStart;
+      if (current && current.kind === 'audio' && audioEl && !audioEl.paused) {
+        // audioEl.currentTime is always accurate regardless of playbackRate,
+        // unlike the old ctx.currentTime-based estimate it replaces.
+        current.pausedOffset = audioEl.currentTime;
         current.suppressAdvance = true;
-        currentAudioSource.stop();
-        currentAudioSource = null;
+        audioEl.pause();
         stopHighlightPoll();
       } else {
         speechSynthesis.pause();
@@ -656,9 +688,10 @@ function buildHtml(): string {
       });
       if (current && current.kind === 'audio') {
         current.rate = message.rate;
-        if (currentAudioSource) {
-          // Live, sample-accurate — no restart needed (see class doc re: pitch).
-          currentAudioSource.playbackRate.value = message.rate || 1;
+        if (audioEl) {
+          // Live, instant — no restart needed, and preservesPitch keeps
+          // this from raising pitch the way it used to (see class doc).
+          audioEl.playbackRate = message.rate || 1;
         }
         // Voice changes apply to the next Enhanced utterance instead, since
         // a different voice means a different synthesized file that would
@@ -689,9 +722,8 @@ function buildHtml(): string {
       current = null;
       paused = false;
       speechSynthesis.cancel();
-      if (currentAudioSource) {
-        try { currentAudioSource.stop(); } catch (e) { /* already stopped */ }
-        currentAudioSource = null;
+      if (audioEl && !audioEl.paused) {
+        audioEl.pause();
       }
       stopHighlightPoll();
       clearTextDisplay();
