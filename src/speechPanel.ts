@@ -78,6 +78,17 @@ export class SpeechPanel {
 		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice });
 	}
 
+	/**
+	 * Marks the start of a new response in the persistent transcript, before
+	 * its first chunk is spoken — the panel has no other way to tell "this
+	 * next chunk begins a new response" apart from "another chunk of the
+	 * one already in progress", since chunk messages (speak/playAudio)
+	 * carry no such distinction themselves.
+	 */
+	notifyNewResponse(): void {
+		void this.panel?.webview.postMessage({ type: 'newResponse' });
+	}
+
 	/** Queues pre-synthesized audio (base64-encoded) for playback, e.g. from the Enhanced engine. */
 	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[] = []): void {
 		const panel = this.ensurePanel();
@@ -236,13 +247,25 @@ function buildHtml(): string {
     padding: 0.85rem 1rem;
     border: 1px solid var(--vscode-panel-border, #3c3c3c);
     border-radius: 4px;
-    max-height: 220px;
+    max-height: 400px;
     overflow-y: auto;
     line-height: 1.7;
     font-size: 0.95rem;
     white-space: pre-wrap;
   }
   #textDisplay:empty { display: none; }
+  #textDisplay .response-entry:not(:first-child) {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--vscode-panel-border, #3c3c3c);
+  }
+  #textDisplay .word {
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  #textDisplay .word:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  }
   #textDisplay .word.current-word {
     background: var(--vscode-editor-selectionBackground, #264f78);
     border-radius: 3px;
@@ -263,37 +286,105 @@ function buildHtml(): string {
   const statusEl = document.getElementById('status');
   const textDisplayEl = document.getElementById('textDisplay');
 
-  // Renders text as a sequence of per-word span elements (splitting on
+  // Bounded history of responses so the transcript stays persistent and
+  // clickable (see replayFromWord) instead of being wiped on every new
+  // chunk, while capping DOM/memory growth over a long session.
+  const MAX_HISTORY_RESPONSES = 5;
+  const responseHistory = [];
+  let currentResponseEntry = null;
+
+  function startNewResponseEntry() {
+    const entryEl = document.createElement('div');
+    entryEl.className = 'response-entry';
+    textDisplayEl.appendChild(entryEl);
+    currentResponseEntry = { el: entryEl };
+    responseHistory.push(currentResponseEntry);
+    while (responseHistory.length > MAX_HISTORY_RESPONSES) {
+      const oldest = responseHistory.shift();
+      oldest.el.remove();
+    }
+  }
+
+  // Defensive fallback for the (should-be-impossible) case a chunk arrives
+  // before the extension host's first 'newResponse' signal.
+  function ensureCurrentResponseEntry() {
+    if (!currentResponseEntry) {
+      startNewResponseEntry();
+    }
+    return currentResponseEntry;
+  }
+
+  // Renders item.text as a sequence of per-word span elements (splitting on
   // whitespace, preserving it as plain text nodes between them) so live
   // highlighting is just toggling a class on the right span instead of
-  // re-rendering text on every word boundary.
-  function renderTextWithWordSpans(text) {
-    textDisplayEl.textContent = '';
+  // re-rendering text on every word boundary. Appends into the current
+  // response's own container rather than replacing #textDisplay's content,
+  // so earlier chunks/responses stay visible. Each span carries a direct
+  // back-reference to the item and its own index for click-to-replay.
+  function renderTextWithWordSpans(item) {
+    const container = ensureCurrentResponseEntry().el;
+    const text = item.text || '';
     const spans = [];
     const wordRegex = /\\S+/g;
     let match;
     let lastIndex = 0;
     while ((match = wordRegex.exec(text))) {
       if (match.index > lastIndex) {
-        textDisplayEl.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+        container.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
       const span = document.createElement('span');
       span.className = 'word';
       span.textContent = match[0];
-      textDisplayEl.appendChild(span);
+      span._replayItem = item;
+      span._replayIndex = spans.length;
+      container.appendChild(span);
       spans.push({ start: match.index, end: match.index + match[0].length, el: span });
       lastIndex = match.index + match[0].length;
     }
     if (lastIndex < text.length) {
-      textDisplayEl.appendChild(document.createTextNode(text.slice(lastIndex)));
+      container.appendChild(document.createTextNode(text.slice(lastIndex)));
     }
+    // Separates this chunk from whatever's appended next — chunks otherwise
+    // have no whitespace between them since splitIntoSpeechChunks trims each.
+    container.appendChild(document.createTextNode(' '));
+    item.wordSpans = spans;
     return spans;
   }
 
-  function setCurrentWordSpan(item, target) {
+  // Removes this item's not-yet-spoken spans (start >= charIndex) from the
+  // transcript. Used before Enhanced mid-utterance voice resynthesis, whose
+  // new word-boundary timings are relative to the new remainder text, not
+  // the original item's — so the old "remainder" spans can't just be
+  // reused/re-highlighted the way the System engine's offset-based replay
+  // (see replayFromWord/startTts) can, and would otherwise appear twice
+  // once the resynthesized remainder's own spans get appended after it.
+  function removeUnspokenSpansFrom(item, charIndex) {
+    if (!item.wordSpans) {
+      return;
+    }
+    const keep = [];
     for (const s of item.wordSpans) {
-      if (s.el.classList.contains('current-word') && s !== target) {
-        s.el.classList.remove('current-word');
+      if (s.start >= charIndex) {
+        s.el.remove();
+      } else {
+        keep.push(s);
+      }
+    }
+    item.wordSpans = keep;
+  }
+
+  function clearAnyCurrentWordHighlight() {
+    const el = textDisplayEl.querySelector('.word.current-word');
+    if (el) {
+      el.classList.remove('current-word');
+    }
+  }
+
+  function setCurrentWordSpan(item, target) {
+    const stale = textDisplayEl.querySelectorAll('.word.current-word');
+    for (const el of stale) {
+      if (!target || el !== target.el) {
+        el.classList.remove('current-word');
       }
     }
     if (target && !target.el.classList.contains('current-word')) {
@@ -337,10 +428,6 @@ function buildHtml(): string {
       return;
     }
     setCurrentWordSpan(item, item.wordSpans[index]);
-  }
-
-  function clearTextDisplay() {
-    textDisplayEl.textContent = '';
   }
 
   // Self-managed queue (rather than relying on speechSynthesis's own
@@ -440,9 +527,21 @@ function buildHtml(): string {
     vscode.postMessage({ type: 'playbackState', state: state });
   }
 
-  function startTts(item, token) {
-    item.wordSpans = renderTextWithWordSpans(item.text);
-    const utterance = new SpeechSynthesisUtterance(item.text);
+  // speakOffset > 0 means "continue this same item from partway through"
+  // (a live rate/voice change mid-utterance, or a transcript click) rather
+  // than a fresh chunk: item.wordSpans already exists and is reused as-is
+  // (no re-render, so the already-visible transcript isn't touched), only
+  // the remainder text from that offset is actually spoken, and the
+  // utterance's own onboundary charIndex — relative to that remainder — is
+  // shifted back into the original item.text's coordinate space before
+  // highlighting, so it still resolves to the correct span in the reused
+  // (unshifted) wordSpans array.
+  function startTts(item, token, speakOffset) {
+    const offset = speakOffset || 0;
+    if (offset === 0) {
+      renderTextWithWordSpans(item);
+    }
+    const utterance = new SpeechSynthesisUtterance(offset > 0 ? item.text.slice(offset) : item.text);
     if (item.rate) {
       utterance.rate = item.rate;
     }
@@ -459,8 +558,8 @@ function buildHtml(): string {
       if (e.name && e.name !== 'word') {
         return;
       }
-      item.charIndex = e.charIndex;
-      highlightWordAt(item, e.charIndex);
+      item.charIndex = e.charIndex + offset;
+      highlightWordAt(item, item.charIndex);
     };
     utterance.onstart = reportState;
     utterance.onend = () => { if (token === speakToken) { current = null; speakNext(); } };
@@ -570,7 +669,7 @@ function buildHtml(): string {
   }
 
   function startAudio(item, token) {
-    item.wordSpans = renderTextWithWordSpans(item.text || '');
+    renderTextWithWordSpans(item);
     playAudioItem(item, token, 0);
   }
 
@@ -580,7 +679,7 @@ function buildHtml(): string {
     if (queue.length === 0) {
       current = null;
       paused = false;
-      clearTextDisplay();
+      clearAnyCurrentWordHighlight();
       reportState();
       return;
     }
@@ -601,9 +700,46 @@ function buildHtml(): string {
     }
   }
 
+  // Click-to-replay: stops whatever's currently playing (without touching
+  // the transcript itself) and plays just this one chunk from the clicked
+  // word onward, then goes idle rather than continuing into whatever
+  // chunk originally followed it — simplest, most predictable behavior,
+  // and avoids re-queueing/re-fetching content beyond what was clicked.
+  function replayFromWord(item, wordIndex) {
+    speakToken++;
+    const token = speakToken;
+    stopHighlightPoll();
+    speechSynthesis.cancel();
+    if (audioEl && !audioEl.paused) {
+      audioEl.pause();
+    }
+    queue.length = 0;
+    paused = false;
+    current = item;
+    item.suppressAdvance = false;
+
+    if (item.kind === 'audio') {
+      const word = item.words && item.words[wordIndex];
+      playAudioItem(item, token, word ? word.offsetSeconds : 0);
+    } else {
+      const span = item.wordSpans && item.wordSpans[wordIndex];
+      startTts(item, token, span ? span.start : 0);
+    }
+  }
+
+  textDisplayEl.addEventListener('click', (e) => {
+    const span = e.target.closest ? e.target.closest('.word') : null;
+    if (!span || !span._replayItem) {
+      return;
+    }
+    replayFromWord(span._replayItem, span._replayIndex);
+  });
+
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (message.type === 'speak') {
+    if (message.type === 'newResponse') {
+      startNewResponseEntry();
+    } else if (message.type === 'speak') {
       enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0 });
     } else if (message.type === 'playAudio') {
       enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0 });
@@ -629,6 +765,13 @@ function buildHtml(): string {
         const combined = [remainder, queuedText].filter((s) => s.length > 0).join(' ');
 
         if (combined.length > 0) {
+          // The resynthesized remainder's word-boundary timings will be
+          // relative to itself, not this item's original text, so its
+          // spans can't be reused/re-highlighted the way a same-engine
+          // replay can — remove the not-yet-spoken portion now so the
+          // fresh spans rendered for the resynthesized remainder (see the
+          // resynthesizedAudio handler) don't end up duplicating it.
+          removeUnspokenSpansFrom(current, charIndex);
           current.suppressAdvance = true;
           if (audioEl) {
             audioEl.pause();
@@ -697,21 +840,32 @@ function buildHtml(): string {
         // a different voice means a different synthesized file that would
         // need a fresh network fetch to swap in.
       } else if (current && current.kind === 'tts') {
-        const remaining = current.text.slice(current.charIndex || 0);
-        if (remaining.trim().length > 0) {
-          queue.unshift({ kind: 'tts', text: remaining, rate: message.rate, voice: message.voice, charIndex: 0 });
-        }
+        // Reuses the same item (via startTts's speakOffset) rather than
+        // splicing a new { text: remaining, ... } item into the queue —
+        // that would render a second, fresh set of spans for the
+        // remainder, duplicating it in the transcript alongside the
+        // original item's still-visible (already-rendered) ones.
+        const charOffset = current.charIndex || 0;
+        const hasRemaining = current.text.slice(charOffset).trim().length > 0;
         const wasPaused = paused;
+        current.rate = message.rate;
+        current.voice = message.voice;
         speechSynthesis.cancel();
-        speakNext();
-        if (wasPaused && current) {
-          // Rebuild + start the replacement utterance, then immediately
-          // re-suspend it — speak() always starts playing, there's no way
-          // to hand the engine a paused utterance directly, so this is the
-          // only way to swap settings without losing the pause.
-          speechSynthesis.pause();
-          paused = true;
+        speakToken++; // invalidate the interrupted utterance's onend/onerror
+        if (hasRemaining) {
+          startTts(current, speakToken, charOffset);
+          if (wasPaused) {
+            // Rebuild + start the replacement utterance, then immediately
+            // re-suspend it — speak() always starts playing, there's no way
+            // to hand the engine a paused utterance directly, so this is the
+            // only way to swap settings without losing the pause.
+            speechSynthesis.pause();
+            paused = true;
+          }
           reportState();
+        } else {
+          current = null;
+          speakNext();
         }
       }
     } else if (message.type === 'stop') {
@@ -726,7 +880,7 @@ function buildHtml(): string {
         audioEl.pause();
       }
       stopHighlightPoll();
-      clearTextDisplay();
+      clearAnyCurrentWordHighlight();
       reportState();
     } else if (message.type === 'getVoices') {
       const collectVoices = () => new Promise((resolve) => {

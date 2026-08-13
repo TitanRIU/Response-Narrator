@@ -174,8 +174,12 @@ async function startWatching(): Promise<void> {
 	newWatcher.on('utterance', (utterance: Utterance) => {
 		console.log('[Response Narrator]', utterance.text);
 		outputChannel.appendLine(utterance.text);
+		const isFirstChunkOfResponse = currentResponseChunks.length === 0;
 		currentResponseChunks.push(utterance.text);
 		if (getPlaybackMode() === 'auto') {
+			if (isFirstChunkOfResponse) {
+				speechPanel?.notifyNewResponse();
+			}
 			void speak(utterance.text);
 		}
 	});
@@ -225,6 +229,7 @@ function playLastResponse(): void {
 		void vscode.window.showInformationMessage('Response Narrator: no response captured yet.');
 		return;
 	}
+	speechPanel?.notifyNewResponse();
 	void speak(chunks.join(' '));
 }
 

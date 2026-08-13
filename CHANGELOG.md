@@ -4,6 +4,16 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.9] - 2026-08-13
+
+### Added
+
+- The transcript panel now stays visible and clickable instead of only showing the chunk currently being spoken. The current response and the last few before it remain on screen, separated by a divider, and clicking any word replays from that exact point (both voice engines).
+
+### Fixed
+
+- A word's highlight could get stuck lit up after its chunk finished, leaving multiple words appearing highlighted at once across a long response. Highlight clearing now checks the whole panel instead of only the chunk currently playing.
+
 ## [0.1.8] - 2026-08-08
 
 ### Fixed
