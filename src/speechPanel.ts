@@ -223,39 +223,10 @@ function buildHtml(): string {
     display: flex;
     flex-direction: column;
   }
-  #status { opacity: 0.8; }
-  body.needs-unlock { cursor: pointer; }
-  #unlockPrompt {
-    display: none;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-top: 0.85rem;
-    padding: 0.85rem 1rem;
-    border: 1px solid var(--vscode-notificationsWarningIcon-foreground, #cca700);
-    border-radius: 4px;
-    background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.1));
-    flex-shrink: 0;
-  }
-  body.needs-unlock #unlockPrompt { display: flex; }
-  #unlockPrompt span { flex: 1; }
-  #unlockPrompt button {
-    flex-shrink: 0;
-    padding: 0.4rem 1rem;
-    border: none;
-    border-radius: 3px;
-    background: var(--vscode-button-background, #0e639c);
-    color: var(--vscode-button-foreground, #ffffff);
-    font-weight: 600;
-    font-family: inherit;
-    font-size: inherit;
-    cursor: pointer;
-  }
-  #unlockPrompt button:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
   #textDisplay {
     flex: 1 1 auto;
     min-height: 0;
-    margin: 0.85rem -1rem 0 0;
+    margin: 0 -1rem 0 0;
     padding-right: 1rem;
     overflow-y: auto;
     line-height: 1.7;
@@ -279,16 +250,52 @@ function buildHtml(): string {
     background: var(--vscode-editor-selectionBackground, #264f78);
     border-radius: 3px;
   }
+  #statusBar {
+    flex-shrink: 0;
+    margin-top: 0.85rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+  }
+  #status { opacity: 0.8; }
+  body.needs-unlock { cursor: pointer; }
+  #unlockPrompt {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.85rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--vscode-notificationsWarningIcon-foreground, #cca700);
+    border-radius: 4px;
+    background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.1));
+  }
+  body.needs-unlock #unlockPrompt { display: flex; }
+  #unlockPrompt span { flex: 1; }
+  #unlockPrompt button {
+    flex-shrink: 0;
+    padding: 0.4rem 1rem;
+    border: none;
+    border-radius: 3px;
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+    font-weight: 600;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+  #unlockPrompt button:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
 </style>
 </head>
 <body>
-<p>Response Narrator is active.</p>
-<p id="status">Idle.</p>
-<div id="unlockPrompt">
-  <span>Would you like to enable Enhanced voice for Response Narrator?</span>
-  <button id="enableButton" type="button">Enable</button>
-</div>
 <div id="textDisplay"></div>
+<div id="statusBar">
+  <p>Response Narrator is active.</p>
+  <p id="status">Idle.</p>
+  <div id="unlockPrompt">
+    <span>Would you like to enable Enhanced voice for Response Narrator?</span>
+    <button id="enableButton" type="button">Enable</button>
+  </div>
+</div>
 <script nonce="${nonce}">
 (function () {
   const vscode = acquireVsCodeApi();
