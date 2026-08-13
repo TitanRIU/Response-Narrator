@@ -8,11 +8,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 
-- The transcript panel now stays visible and clickable instead of only showing the chunk currently being spoken. The current response and the last few before it remain on screen, separated by a divider, and clicking any word replays from that exact point (both voice engines).
+- The transcript panel now stays visible and clickable instead of only showing the chunk currently being spoken. The current response and the last few before it remain on screen, separated by a divider, and clicking any word replays from that exact point (both voice engines) and continues on through the rest of the response instead of stopping after just that one chunk.
+
+### Changed
+
+- The transcript panel now reads as plain flowing text filling the whole window, matching the look of the Claude Code chat panel, instead of a bordered box with an inset scrollbar.
 
 ### Fixed
 
 - A word's highlight could get stuck lit up after its chunk finished, leaving multiple words appearing highlighted at once across a long response. Highlight clearing now checks the whole panel instead of only the chunk currently playing.
+- Clicking a word near the start of a multi-chunk response replayed only that one chunk and then stopped, leaving the rest of the response unspoken. It now continues through the response's remaining chunks the same way it would have played the first time.
 
 ## [0.1.8] - 2026-08-08
 

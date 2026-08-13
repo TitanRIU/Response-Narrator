@@ -213,7 +213,16 @@ function buildHtml(): string {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; media-src data:;">
 <title>Response Narrator</title>
 <style>
-  body { font-family: var(--vscode-font-family, sans-serif); padding: 1rem; color: var(--vscode-foreground); }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--vscode-font-family, sans-serif);
+    color: var(--vscode-foreground);
+    margin: 0;
+    padding: 1rem;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
   #status { opacity: 0.8; }
   body.needs-unlock { cursor: pointer; }
   #unlockPrompt {
@@ -226,6 +235,7 @@ function buildHtml(): string {
     border: 1px solid var(--vscode-notificationsWarningIcon-foreground, #cca700);
     border-radius: 4px;
     background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.1));
+    flex-shrink: 0;
   }
   body.needs-unlock #unlockPrompt { display: flex; }
   #unlockPrompt span { flex: 1; }
@@ -243,11 +253,10 @@ function buildHtml(): string {
   }
   #unlockPrompt button:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
   #textDisplay {
-    margin-top: 0.85rem;
-    padding: 0.85rem 1rem;
-    border: 1px solid var(--vscode-panel-border, #3c3c3c);
-    border-radius: 4px;
-    max-height: 400px;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 0.85rem -1rem 0 0;
+    padding-right: 1rem;
     overflow-y: auto;
     line-height: 1.7;
     font-size: 0.95rem;
@@ -297,7 +306,7 @@ function buildHtml(): string {
     const entryEl = document.createElement('div');
     entryEl.className = 'response-entry';
     textDisplayEl.appendChild(entryEl);
-    currentResponseEntry = { el: entryEl };
+    currentResponseEntry = { el: entryEl, items: [] };
     responseHistory.push(currentResponseEntry);
     while (responseHistory.length > MAX_HISTORY_RESPONSES) {
       const oldest = responseHistory.shift();
@@ -322,7 +331,10 @@ function buildHtml(): string {
   // so earlier chunks/responses stay visible. Each span carries a direct
   // back-reference to the item and its own index for click-to-replay.
   function renderTextWithWordSpans(item) {
-    const container = ensureCurrentResponseEntry().el;
+    const entry = ensureCurrentResponseEntry();
+    const container = entry.el;
+    item._responseEntry = entry;
+    entry.items.push(item);
     const text = item.text || '';
     const spans = [];
     const wordRegex = /\\S+/g;
@@ -538,7 +550,7 @@ function buildHtml(): string {
   // (unshifted) wordSpans array.
   function startTts(item, token, speakOffset) {
     const offset = speakOffset || 0;
-    if (offset === 0) {
+    if (!item.wordSpans) {
       renderTextWithWordSpans(item);
     }
     const utterance = new SpeechSynthesisUtterance(offset > 0 ? item.text.slice(offset) : item.text);
@@ -669,7 +681,9 @@ function buildHtml(): string {
   }
 
   function startAudio(item, token) {
-    renderTextWithWordSpans(item);
+    if (!item.wordSpans) {
+      renderTextWithWordSpans(item);
+    }
     playAudioItem(item, token, 0);
   }
 
@@ -701,10 +715,14 @@ function buildHtml(): string {
   }
 
   // Click-to-replay: stops whatever's currently playing (without touching
-  // the transcript itself) and plays just this one chunk from the clicked
-  // word onward, then goes idle rather than continuing into whatever
-  // chunk originally followed it — simplest, most predictable behavior,
-  // and avoids re-queueing/re-fetching content beyond what was clicked.
+  // the transcript itself) and plays this chunk from the clicked word
+  // onward, then continues into the rest of its response's already-
+  // rendered chunks (entry.items, in original order) the same way it would
+  // have played through them the first time — otherwise clicking a word
+  // near the start of a response would replay just that one chunk and
+  // stop, leaving the rest of the response unspoken. Chunks still waiting
+  // in the global queue (not yet rendered/played) are untouched: they're
+  // disjoint from entry.items and keep their place after the resumed ones.
   function replayFromWord(item, wordIndex) {
     speakToken++;
     const token = speakToken;
@@ -713,10 +731,17 @@ function buildHtml(): string {
     if (audioEl && !audioEl.paused) {
       audioEl.pause();
     }
-    queue.length = 0;
     paused = false;
     current = item;
     item.suppressAdvance = false;
+
+    const entry = item._responseEntry;
+    if (entry) {
+      const idx = entry.items.indexOf(item);
+      if (idx !== -1) {
+        queue.unshift(...entry.items.slice(idx + 1));
+      }
+    }
 
     if (item.kind === 'audio') {
       const word = item.words && item.words[wordIndex];
