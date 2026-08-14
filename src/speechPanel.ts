@@ -234,10 +234,13 @@ function buildHtml(): string {
     white-space: pre-wrap;
   }
   #textDisplay:empty { display: none; }
-  #textDisplay .response-entry:not(:first-child) {
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
-    border-top: 1px dashed var(--vscode-panel-border, #3c3c3c);
+  #textDisplay .response-entry {
+    padding: 0.7rem 0.9rem;
+    border-radius: 6px;
+    background: rgba(127, 127, 127, 0.07);
+  }
+  #textDisplay .response-entry + .response-entry {
+    margin-top: 0.6rem;
   }
   #textDisplay .word {
     cursor: pointer;
