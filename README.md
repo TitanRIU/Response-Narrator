@@ -24,6 +24,7 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 - Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode.
 - Two voice engines: **System** (built-in OS voices: instant, works offline) and **Enhanced** (higher-quality neural voices via Microsoft Edge's online text-to-speech service), with automatic fallback to System if Enhanced is unavailable.
 - Live word-by-word highlighting in the Response Narrator panel, synced to whichever engine is speaking.
+- The transcript stays visible and scrollable across the current response and the last few before it, instead of disappearing after each chunk. Click any word to replay from that exact point.
 - Play/Pause/Stop controls in the status bar, plus keyboard shortcuts (`Ctrl+Alt+P` to play/pause, `Ctrl+Alt+S` to stop).
 - Auto or Manual playback modes, adjustable speed, and a voice picker for both engines.
 - Responses are split into natural-sounding chunks: whole sentences where possible, falling back to a comma or other natural pause before ever cutting mid-word.
@@ -32,7 +33,7 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 ## Requirements
 
 - The [Claude Code](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code) VS Code extension. Response Narrator reads its session transcripts, so it has nothing to narrate without it.
-- It watches whichever Claude Code session was most recently active anywhere on your machine, not just the one open in the same VS Code window (useful if you run Claude Code across multiple workspaces at once).
+- It watches the Claude Code session(s) for the workspace folder(s) open in that same VS Code window. If you run Claude Code in multiple VS Code windows at once, each narrates only its own project.
 - The Enhanced voice engine requires network access; the System voice engine works fully offline.
 
 ## Privacy
