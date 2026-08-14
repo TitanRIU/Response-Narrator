@@ -363,9 +363,12 @@ function buildHtml(): string {
     if (lastIndex < text.length) {
       container.appendChild(document.createTextNode(text.slice(lastIndex)));
     }
-    // Separates this chunk from whatever's appended next — chunks otherwise
-    // have no whitespace between them since splitIntoSpeechChunks trims each.
-    container.appendChild(document.createTextNode(' '));
+    // Separates this chunk from whatever's appended next with a paragraph
+    // break (rendered thanks to #textDisplay's white-space: pre-wrap) rather
+    // than a single space, so a multi-chunk response reads as distinct
+    // chunks instead of one run-on paragraph. Chunks otherwise have no
+    // whitespace between them since splitIntoSpeechChunks trims each.
+    container.appendChild(document.createTextNode('\\n\\n'));
     item.wordSpans = spans;
     return spans;
   }

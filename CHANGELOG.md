@@ -14,6 +14,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - The transcript panel now reads as plain flowing text filling the whole window, matching the look of the Claude Code chat panel, instead of a bordered box with an inset scrollbar.
 - The status line and Enhanced-voice unlock prompt moved from the top of the panel to the bottom, below the transcript, similar to how the Claude Code chat panel keeps its input box at the bottom below the conversation.
+- Chunks within the same response are now separated by a paragraph break instead of a single space, so a multi-chunk response reads as distinct chunks rather than one run-on paragraph.
 
 ### Fixed
 
