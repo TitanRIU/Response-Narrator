@@ -751,7 +751,7 @@ function updateMenuStatusBar(): void {
 	const engine = getVoiceEngine();
 	const voiceLabel =
 		engine === 'enhanced' ? getEnhancedVoiceSetting() || DEFAULT_ENHANCED_VOICE : getVoiceSetting() || 'System default';
-	menuStatusBarItem.tooltip = `Response Narrator (click to open) — Playback: ${mode}, Engine: ${
+	menuStatusBarItem.tooltip = `Response Narrator (click to open), Playback: ${mode}, Engine: ${
 		engine === 'enhanced' ? 'Enhanced' : 'System'
 	}, Voice: ${voiceLabel}, Speed: ${getRate()}x`;
 }
