@@ -56,8 +56,6 @@ let pendingSynthesisCount = 0;
 let watcher: TranscriptWatcher | undefined;
 let speechPanel: SpeechPanel | undefined;
 let menuStatusBarItem: vscode.StatusBarItem;
-let stopStatusBarItem: vscode.StatusBarItem;
-let playbackStatusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
 let playbackState: PlaybackState = 'idle';
@@ -67,6 +65,18 @@ let playbackState: PlaybackState = 'idle';
 // these back "play last response".
 let currentResponseChunks: string[] = [];
 let lastCompletedResponse: string[] | undefined;
+// Whichever of the two arrays above was last spoken from, and how many of
+// its chunks had arrived at that point — lets playLastResponse() tell apart
+// three cases on a Play press: never spoken from this buffer (fully fresh),
+// the same buffer with more chunks arrived since (Manual mode pressing Play
+// again while the response is still streaming in — speak just the new
+// remainder into the existing card), or the same buffer with nothing new
+// (a pure replay — restart the existing card rather than rendering a
+// duplicate one). Comparing only by reference/length, not deep equality,
+// since currentResponseChunks is mutated in place via push rather than
+// reassigned, so its identity alone doesn't tell "nothing new since".
+let lastSpokenBuffer: string[] | undefined;
+let lastSpokenCount = 0;
 
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Response Narrator');
@@ -74,27 +84,15 @@ export function activate(context: vscode.ExtensionContext) {
 
 	menuStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	menuStatusBarItem.text = '$(unmute) Narrator';
-	menuStatusBarItem.command = 'response-narrator.openMenu';
+	menuStatusBarItem.command = 'response-narrator.openPanel';
 	menuStatusBarItem.show();
 
-	stopStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-	stopStatusBarItem.text = '$(debug-stop)';
-	stopStatusBarItem.tooltip = 'Response Narrator: stop playback';
-	stopStatusBarItem.command = 'response-narrator.stopSpeaking';
-	stopStatusBarItem.show();
-
-	playbackStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
-	playbackStatusBarItem.command = 'response-narrator.togglePlayback';
-	playbackStatusBarItem.show();
-
 	updateMenuStatusBar();
-	updatePlaybackStatusBar();
 
 	context.subscriptions.push(
 		outputChannel,
 		menuStatusBarItem,
-		stopStatusBarItem,
-		playbackStatusBarItem,
+		vscode.commands.registerCommand('response-narrator.openPanel', () => speechPanel?.open()),
 		vscode.commands.registerCommand('response-narrator.openMenu', openMenu),
 		vscode.commands.registerCommand('response-narrator.togglePlayback', togglePlayback),
 		vscode.commands.registerCommand('response-narrator.selectVoice', selectVoice),
@@ -105,7 +103,6 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			updateMenuStatusBar();
-			updatePlaybackStatusBar();
 			if (
 				e.affectsConfiguration(`${CONFIG_SECTION}.rate`) ||
 				e.affectsConfiguration(`${CONFIG_SECTION}.voice`)
@@ -115,10 +112,24 @@ export function activate(context: vscode.ExtensionContext) {
 			if (e.affectsConfiguration(`${CONFIG_SECTION}.enhancedVoice`)) {
 				speechPanel?.notifyEnhancedVoiceChanged();
 			}
+			if (
+				e.affectsConfiguration(`${CONFIG_SECTION}.rate`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.voiceEngine`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.playbackMode`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.voice`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.enhancedVoice`)
+			) {
+				const engine = getVoiceEngine();
+				speechPanel?.updateControlBar({
+					engine,
+					rate: getRate(),
+					mode: getPlaybackMode(),
+					voice: engine === 'enhanced' ? getEnhancedVoiceSetting() : getVoiceSetting()
+				});
+			}
 		}),
 		speechPanel.onDidChangeState((state) => {
 			playbackState = state;
-			updatePlaybackStatusBar();
 		}),
 		speechPanel.onDidLog((message) => {
 			console.warn('[Response Narrator]', message);
@@ -136,6 +147,30 @@ export function activate(context: vscode.ExtensionContext) {
 		speechPanel.onDidRequestResynthesis(({ token, text }) => {
 			speechGeneration++;
 			void handleResynthesis(token, text);
+		}),
+		// In-panel control bar: same actions as the status bar/keybindings,
+		// just reachable without leaving the Response Narrator panel.
+		speechPanel.onDidRequestPlayPause(() => togglePlayback()),
+		speechPanel.onDidRequestStop(() => stopSpeaking()),
+		speechPanel.onDidRequestSetRate((rate) => {
+			void vscode.workspace.getConfiguration(CONFIG_SECTION).update('rate', rate, vscode.ConfigurationTarget.Global);
+		}),
+		speechPanel.onDidRequestSetEngine((engine) => {
+			void vscode.workspace
+				.getConfiguration(CONFIG_SECTION)
+				.update('voiceEngine', engine, vscode.ConfigurationTarget.Global);
+		}),
+		speechPanel.onDidRequestSetMode((mode) => {
+			void vscode.workspace
+				.getConfiguration(CONFIG_SECTION)
+				.update('playbackMode', mode, vscode.ConfigurationTarget.Global);
+		}),
+		speechPanel.onDidRequestEnhancedVoices(() => {
+			void provideEnhancedVoicesToPanel();
+		}),
+		speechPanel.onDidRequestSetVoice(({ engine, voice }) => {
+			const key = engine === 'enhanced' ? 'enhancedVoice' : 'voice';
+			void vscode.workspace.getConfiguration(CONFIG_SECTION).update(key, voice, vscode.ConfigurationTarget.Global);
 		})
 	);
 
@@ -181,6 +216,8 @@ async function startWatching(): Promise<void> {
 				speechPanel?.notifyNewResponse();
 			}
 			void speak(utterance.text);
+			lastSpokenBuffer = currentResponseChunks;
+			lastSpokenCount = currentResponseChunks.length;
 		}
 	});
 	newWatcher.on('turnBoundary', () => {
@@ -229,8 +266,29 @@ function playLastResponse(): void {
 		void vscode.window.showInformationMessage('Response Narrator: no response captured yet.');
 		return;
 	}
-	speechPanel?.notifyNewResponse();
-	void speak(chunks.join(' '));
+	if (chunks !== lastSpokenBuffer) {
+		// Never spoken from this buffer before — fully fresh content.
+		lastSpokenBuffer = chunks;
+		lastSpokenCount = chunks.length;
+		speechPanel?.notifyNewResponse();
+		void speak(chunks.join(' '));
+		return;
+	}
+	if (chunks.length > lastSpokenCount) {
+		// Same response, but more of it arrived since it was last spoken
+		// (Manual mode: Play pressed again while still streaming in) — the
+		// existing card already covers what was spoken before, so only the
+		// new remainder needs speaking, into that same card.
+		const remainder = chunks.slice(lastSpokenCount).join(' ');
+		lastSpokenCount = chunks.length;
+		void speak(remainder);
+		return;
+	}
+	// Same buffer, nothing new since it was fully spoken — a repeat Play
+	// press means "restart this", not "here's fresh content", so reuse the
+	// existing transcript card/audio instead of rendering/fetching a
+	// duplicate.
+	speechPanel?.restartLastResponse();
 }
 
 function stopSpeaking(): void {
@@ -381,6 +439,22 @@ function baseLanguageOf(locale: string): string {
 }
 
 /**
+ * Fetches the full Enhanced voice list for the panel's own in-panel Voice
+ * popup, which does its own language/region/voice grouping and searching
+ * client-side (see the webview script) rather than round-tripping to the
+ * extension host per navigation step.
+ */
+async function provideEnhancedVoicesToPanel(): Promise<void> {
+	try {
+		const voices = await listEnhancedVoices();
+		speechPanel?.provideEnhancedVoices(voices);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		speechPanel?.provideEnhancedVoicesError(message);
+	}
+}
+
+/**
  * Enhanced has 300+ voices across 140+ locales — most languages have only
  * one region (e.g. Albanian is just sq-AL), but a handful (English, Arabic,
  * Spanish, ...) have a dozen+, which is what actually bloats the list. So
@@ -495,7 +569,6 @@ async function synthesizeWithFallback(
 ): Promise<void> {
 	const voice = getEnhancedVoiceSetting() || DEFAULT_ENHANCED_VOICE;
 	pendingSynthesisCount++;
-	updatePlaybackStatusBar();
 	try {
 		const { audio, words } = await synthesizeSpeech(text, voice);
 		// The fetch can run concurrently with another part's, but firing the
@@ -523,7 +596,6 @@ async function synthesizeWithFallback(
 		onFallback(getRate(), getVoiceSetting() || undefined);
 	} finally {
 		pendingSynthesisCount--;
-		updatePlaybackStatusBar();
 	}
 }
 
@@ -670,6 +742,8 @@ function getEnhancedVoiceSetting(): string {
 function resetResponseBuffers(): void {
 	currentResponseChunks = [];
 	lastCompletedResponse = undefined;
+	lastSpokenBuffer = undefined;
+	lastSpokenCount = 0;
 }
 
 function updateMenuStatusBar(): void {
@@ -677,35 +751,7 @@ function updateMenuStatusBar(): void {
 	const engine = getVoiceEngine();
 	const voiceLabel =
 		engine === 'enhanced' ? getEnhancedVoiceSetting() || DEFAULT_ENHANCED_VOICE : getVoiceSetting() || 'System default';
-	menuStatusBarItem.tooltip = `Response Narrator settings: Playback: ${mode}, Engine: ${
+	menuStatusBarItem.tooltip = `Response Narrator (click to open) — Playback: ${mode}, Engine: ${
 		engine === 'enhanced' ? 'Enhanced' : 'System'
 	}, Voice: ${voiceLabel}, Speed: ${getRate()}x`;
-}
-
-function updatePlaybackStatusBar(): void {
-	if (isLoading()) {
-		playbackStatusBarItem.text = '$(loading~spin) Loading';
-		playbackStatusBarItem.tooltip = 'Response Narrator: fetching Enhanced voice audio...';
-		return;
-	}
-	const mode = getPlaybackMode();
-	if (playbackState === 'speaking') {
-		playbackStatusBarItem.text = '$(debug-pause) Pause';
-		playbackStatusBarItem.tooltip = 'Response Narrator: pause playback';
-		return;
-	}
-	// Paused and idle share the same icon per mode — pausing always returns
-	// to the mode's "at rest" icon, and clicking it again resumes rather
-	// than restarting (only idle-with-nothing-paused starts fresh).
-	if (mode === 'auto') {
-		playbackStatusBarItem.text = '$(live-share) Auto';
-		playbackStatusBarItem.tooltip =
-			playbackState === 'paused'
-				? 'Response Narrator: resume playback'
-				: 'Response Narrator: auto-narrating new responses. Click to pause.';
-	} else {
-		playbackStatusBarItem.text = '$(play) Play';
-		playbackStatusBarItem.tooltip =
-			playbackState === 'paused' ? 'Response Narrator: resume playback' : 'Response Narrator: play the last response';
-	}
 }

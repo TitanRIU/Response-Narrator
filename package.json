@@ -2,7 +2,7 @@
   "name": "response-narrator",
   "displayName": "Response Narrator",
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "TitanRIU",
   "license": "MIT",
   "icon": "icon.png",
@@ -35,6 +35,10 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "response-narrator.openPanel",
+        "title": "Response Narrator: Open Window"
+      },
       {
         "command": "response-narrator.openMenu",
         "title": "Response Narrator: Open Menu"
@@ -143,6 +147,7 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.46-24",
     "msedge-tts": "^2.0.7"
   }
 }

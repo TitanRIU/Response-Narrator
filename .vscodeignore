@@ -4,6 +4,8 @@
 src/**
 out/**
 node_modules/**
+!node_modules/@vscode/codicons/dist/codicon.css
+!node_modules/@vscode/codicons/dist/codicon.ttf
 esbuild.js
 .gitignore
 .yarnrc

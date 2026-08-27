@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
-import { WordBoundary } from './edgeTts';
+import { WordBoundary, EnhancedVoiceInfo } from './edgeTts';
 
 export interface VoiceInfo {
 	name: string;
@@ -55,6 +55,13 @@ export class SpeechPanel {
 	private readonly logEmitter = new vscode.EventEmitter<string>();
 	private readonly needsUnlockEmitter = new vscode.EventEmitter<void>();
 	private readonly resynthesisEmitter = new vscode.EventEmitter<{ token: number; text: string }>();
+	private readonly playPauseEmitter = new vscode.EventEmitter<void>();
+	private readonly stopEmitter = new vscode.EventEmitter<void>();
+	private readonly setRateEmitter = new vscode.EventEmitter<number>();
+	private readonly setEngineEmitter = new vscode.EventEmitter<'system' | 'enhanced'>();
+	private readonly setModeEmitter = new vscode.EventEmitter<'auto' | 'manual'>();
+	private readonly requestEnhancedVoicesEmitter = new vscode.EventEmitter<void>();
+	private readonly setVoiceEmitter = new vscode.EventEmitter<{ engine: 'system' | 'enhanced'; voice: string }>();
 
 	readonly onDidChangeState = this.stateEmitter.event;
 	/** Diagnostics from inside the webview (e.g. audio playback errors) that wouldn't otherwise be visible. */
@@ -63,14 +70,45 @@ export class SpeechPanel {
 	readonly onDidRequireUnlock = this.needsUnlockEmitter.event;
 	/** Fires when the webview needs fresh Enhanced audio for a mid-utterance voice hand-off (see notifyEnhancedVoiceChanged). */
 	readonly onDidRequestResynthesis = this.resynthesisEmitter.event;
+	/** Fires when the panel's own Play/Pause button is clicked — same action as the status bar/keybinding. */
+	readonly onDidRequestPlayPause = this.playPauseEmitter.event;
+	/** Fires when the panel's own Stop button is clicked. */
+	readonly onDidRequestStop = this.stopEmitter.event;
+	/** Fires when the panel's speed control changes, with the newly picked rate. */
+	readonly onDidRequestSetRate = this.setRateEmitter.event;
+	/** Fires when the panel's engine control changes, with the newly picked engine. */
+	readonly onDidRequestSetEngine = this.setEngineEmitter.event;
+	/** Fires when the panel's playback-mode control changes, with the newly picked mode. */
+	readonly onDidRequestSetMode = this.setModeEmitter.event;
+	/** Fires when the panel's own Voice popup needs the Enhanced voice list (fetched once, cached in the webview). */
+	readonly onDidRequestEnhancedVoices = this.requestEnhancedVoicesEmitter.event;
+	/** Fires when a voice is picked from the panel's own Voice popup. */
+	readonly onDidRequestSetVoice = this.setVoiceEmitter.event;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
-		context.subscriptions.push(this.stateEmitter, this.logEmitter, this.needsUnlockEmitter, this.resynthesisEmitter);
+		context.subscriptions.push(
+			this.stateEmitter,
+			this.logEmitter,
+			this.needsUnlockEmitter,
+			this.resynthesisEmitter,
+			this.playPauseEmitter,
+			this.stopEmitter,
+			this.setRateEmitter,
+			this.setEngineEmitter,
+			this.setModeEmitter,
+			this.requestEnhancedVoicesEmitter,
+			this.setVoiceEmitter
+		);
 	}
 
 	/** Brings the panel to the foreground, e.g. so the user can click it to unlock audio playback. */
 	reveal(): void {
 		this.panel?.reveal(undefined, false);
+	}
+
+	/** Opens the panel (creating it if needed) and brings it to the foreground, e.g. from the status bar item. */
+	open(): void {
+		this.ensurePanel().reveal(undefined, false);
 	}
 
 	speak(text: string, options: SpeakOptions = {}): void {
@@ -129,6 +167,38 @@ export class SpeechPanel {
 		void this.panel?.webview.postMessage({ type: 'updateSettings', rate: options.rate, voice: options.voice });
 	}
 
+	/** Syncs the panel's own speed/engine/mode controls to the current settings, e.g. after a change made via the settings menu. */
+	updateControlBar(info: { engine: 'system' | 'enhanced'; rate: number; mode: 'auto' | 'manual'; voice: string }): void {
+		void this.panel?.webview.postMessage({
+			type: 'updateControlBar',
+			engine: info.engine,
+			rate: info.rate,
+			mode: info.mode,
+			voice: info.voice
+		});
+	}
+
+	/** Supplies the full Enhanced voice list for the panel's own Voice popup to group/search client-side (see onDidRequestEnhancedVoices). */
+	provideEnhancedVoices(voices: EnhancedVoiceInfo[]): void {
+		void this.panel?.webview.postMessage({ type: 'enhancedVoices', voices });
+	}
+
+	/** Reports an Enhanced voice list fetch failure to the panel's own Voice popup. */
+	provideEnhancedVoicesError(message: string): void {
+		void this.panel?.webview.postMessage({ type: 'enhancedVoicesError', message });
+	}
+
+	/**
+	 * Restarts the most recently rendered response from its own beginning,
+	 * reusing its existing transcript card and (for Enhanced) its
+	 * already-fetched audio, instead of fetching/rendering a duplicate one —
+	 * for a "play last response" press that isn't actually new content (see
+	 * playLastResponse in extension.ts).
+	 */
+	restartLastResponse(): void {
+		void this.panel?.webview.postMessage({ type: 'restartLastResponse' });
+	}
+
 	/** Hard stop: cancels and clears the queue, not resumable. */
 	stop(): void {
 		void this.panel?.webview.postMessage({ type: 'stop' });
@@ -159,13 +229,15 @@ export class SpeechPanel {
 		if (this.panel) {
 			return this.panel;
 		}
+		const codiconsDir = vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@vscode', 'codicons', 'dist');
 		const panel = vscode.window.createWebviewPanel(
 			'responseNarrator.speech',
 			'Response Narrator',
 			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
-			{ enableScripts: true, retainContextWhenHidden: true }
+			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [codiconsDir] }
 		);
-		panel.webview.html = buildHtml();
+		const codiconCssUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(codiconsDir, 'codicon.css'));
+		panel.webview.html = buildHtml(panel.webview.cspSource, codiconCssUri.toString());
 		panel.webview.onDidReceiveMessage(
 			(message: {
 				type?: string;
@@ -174,6 +246,10 @@ export class SpeechPanel {
 				message?: string;
 				token?: number;
 				text?: string;
+				rate?: number;
+				engine?: 'system' | 'enhanced';
+				mode?: 'auto' | 'manual';
+				voice?: string;
 			}) => {
 				if (message?.type === 'voices' && this.pendingVoicesResolve) {
 					const resolve = this.pendingVoicesResolve;
@@ -187,6 +263,20 @@ export class SpeechPanel {
 					this.needsUnlockEmitter.fire();
 				} else if (message?.type === 'requestResynthesis' && message.token !== undefined && message.text) {
 					this.resynthesisEmitter.fire({ token: message.token, text: message.text });
+				} else if (message?.type === 'controlPlayPause') {
+					this.playPauseEmitter.fire();
+				} else if (message?.type === 'controlStop') {
+					this.stopEmitter.fire();
+				} else if (message?.type === 'controlSetRate' && message.rate !== undefined) {
+					this.setRateEmitter.fire(message.rate);
+				} else if (message?.type === 'controlSetEngine' && message.engine) {
+					this.setEngineEmitter.fire(message.engine);
+				} else if (message?.type === 'controlSetMode' && message.mode) {
+					this.setModeEmitter.fire(message.mode);
+				} else if (message?.type === 'requestEnhancedVoices') {
+					this.requestEnhancedVoicesEmitter.fire();
+				} else if (message?.type === 'controlSetVoice' && message.engine && message.voice) {
+					this.setVoiceEmitter.fire({ engine: message.engine, voice: message.voice });
 				}
 			},
 			undefined,
@@ -200,17 +290,26 @@ export class SpeechPanel {
 			this.context.subscriptions
 		);
 		this.panel = panel;
+		const config = vscode.workspace.getConfiguration('response-narrator');
+		const initialEngine = config.get<'system' | 'enhanced'>('voiceEngine', 'system');
+		this.updateControlBar({
+			engine: initialEngine,
+			rate: config.get<number>('rate', 1),
+			mode: config.get<'auto' | 'manual'>('playbackMode', 'auto'),
+			voice: config.get<string>(initialEngine === 'enhanced' ? 'enhancedVoice' : 'voice', '')
+		});
 		return panel;
 	}
 }
 
-function buildHtml(): string {
+function buildHtml(cspSource: string, codiconCssUri: string): string {
 	const nonce = crypto.randomBytes(16).toString('base64');
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; media-src data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline' ${cspSource}; font-src ${cspSource}; media-src data:;">
+<link rel="stylesheet" href="${codiconCssUri}">
 <title>Response Narrator</title>
 <style>
   html, body { height: 100%; }
@@ -256,10 +355,215 @@ function buildHtml(): string {
   #statusBar {
     flex-shrink: 0;
     margin-top: 0.85rem;
-    padding-top: 0.85rem;
-    border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+    padding: 0.7rem 0.85rem;
+    border-radius: 8px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    background: var(--vscode-input-background, #3c3c3c);
   }
-  #status { opacity: 0.8; }
+  #statusRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  #transportButtons {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  #optionsRow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    margin-top: 0.7rem;
+  }
+  #statusBar button {
+    flex-shrink: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-family: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 0.3rem;
+    opacity: 0.8;
+    cursor: pointer;
+  }
+  #statusBar button:hover {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+  #statusBar #playPauseBtn,
+  #statusBar #stopBtn {
+    opacity: 1;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #statusBar #playPauseBtn {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+  }
+  #statusBar #playPauseBtn:hover {
+    background: var(--vscode-button-hoverBackground, #1177bb);
+  }
+  #statusBar #stopBtn {
+    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+    color: var(--vscode-foreground);
+  }
+  #statusBar #stopBtn:hover {
+    background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.14));
+  }
+  #optionsRow .ctrl-icon {
+    flex-shrink: 0;
+    opacity: 0.7;
+    font-size: 14px;
+  }
+  #statusBar button .codicon {
+    font-size: 14px;
+    vertical-align: text-bottom;
+  }
+  #optionsRow .ctrl-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: 4px;
+    padding: 0.15rem 0.35rem;
+    opacity: 0.85;
+    font-size: 0.85rem;
+    max-width: 9rem;
+  }
+  #optionsRow .ctrl-trigger > span:not(.ctrl-icon) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #optionsRow .ctrl-trigger:hover {
+    opacity: 1;
+  }
+  #optionsRow .ctrl-trigger.open {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+  #status { opacity: 0.7; margin: 0; font-size: 0.9rem; }
+  .ctrl-popup {
+    position: fixed;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    width: 15.5rem;
+    max-height: 20rem;
+    border-radius: 8px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #454545));
+    background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background, #252526));
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+  .ctrl-popup-header {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 0.3rem;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    opacity: 0.75;
+    border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #454545));
+  }
+  .ctrl-popup-back {
+    flex-shrink: 0;
+    display: inline-flex;
+    border: none;
+    background: transparent;
+    color: var(--vscode-foreground);
+    padding: 0.1rem;
+    margin: -0.1rem 0;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .ctrl-popup-back:hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+  .ctrl-popup-search {
+    flex-shrink: 0;
+    margin: 0.4rem 0.6rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 4px;
+    background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-input-foreground, inherit);
+    font-family: inherit;
+    font-size: 0.85rem;
+  }
+  .ctrl-popup-list {
+    overflow-y: auto;
+    padding: 0.25rem;
+  }
+  .ctrl-popup-empty, .ctrl-popup-loading, .ctrl-popup-error {
+    padding: 0.6rem 0.7rem;
+    font-size: 0.85rem;
+    opacity: 0.7;
+  }
+  .ctrl-popup-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ctrl-popup-item:hover {
+    background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+  .ctrl-popup-item.checked {
+    background: var(--vscode-list-inactiveSelectionBackground, rgba(255, 255, 255, 0.06));
+  }
+  .ctrl-popup-item .codicon:first-child {
+    flex-shrink: 0;
+    opacity: 0.8;
+    margin-top: 0.15rem;
+  }
+  .ctrl-popup-item-spacer {
+    flex-shrink: 0;
+    width: 16px;
+  }
+  .ctrl-popup-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .ctrl-popup-item-label {
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ctrl-popup-item-desc {
+    font-size: 0.75rem;
+    opacity: 0.65;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ctrl-popup-item .codicon-check {
+    flex-shrink: 0;
+    opacity: 0.85;
+  }
   body.needs-unlock { cursor: pointer; }
   #unlockPrompt {
     display: none;
@@ -292,8 +596,31 @@ function buildHtml(): string {
 <body>
 <div id="textDisplay"></div>
 <div id="statusBar">
-  <p>Response Narrator is active.</p>
-  <p id="status">Idle.</p>
+  <div id="statusRow">
+    <p id="status">Idle.</p>
+    <div id="transportButtons">
+      <button id="playPauseBtn" type="button" title="Play"><span id="playPauseIcon" class="codicon codicon-play"></span></button>
+      <button id="stopBtn" type="button" title="Stop"><span class="codicon codicon-debug-stop"></span></button>
+    </div>
+  </div>
+  <div id="optionsRow">
+    <button id="rateBtn" type="button" class="ctrl-trigger" title="Speed">
+      <span class="ctrl-icon codicon codicon-dashboard" aria-hidden="true"></span>
+      <span id="rateBtnLabel">1x</span>
+    </button>
+    <button id="engineBtn" type="button" class="ctrl-trigger" title="Voice Engine">
+      <span id="engineBtnIcon" class="ctrl-icon codicon codicon-device-desktop" aria-hidden="true"></span>
+      <span id="engineBtnLabel">System</span>
+    </button>
+    <button id="voiceBtn" type="button" class="ctrl-trigger" title="Choose voice">
+      <span class="ctrl-icon codicon codicon-person-voice" aria-hidden="true"></span>
+      <span id="voiceBtnLabel">Voice…</span>
+    </button>
+    <button id="modeBtn" type="button" class="ctrl-trigger" title="Playback">
+      <span id="modeBtnIcon" class="ctrl-icon codicon codicon-zap" aria-hidden="true"></span>
+      <span id="modeBtnLabel">Auto</span>
+    </button>
+  </div>
   <div id="unlockPrompt">
     <span>Would you like to enable Enhanced voice for Response Narrator?</span>
     <button id="enableButton" type="button">Enable</button>
@@ -304,6 +631,451 @@ function buildHtml(): string {
   const vscode = acquireVsCodeApi();
   const statusEl = document.getElementById('status');
   const textDisplayEl = document.getElementById('textDisplay');
+  const playPauseBtn = document.getElementById('playPauseBtn');
+  const playPauseIcon = document.getElementById('playPauseIcon');
+  const stopBtn = document.getElementById('stopBtn');
+  const rateBtn = document.getElementById('rateBtn');
+  const rateBtnLabel = document.getElementById('rateBtnLabel');
+  const engineBtn = document.getElementById('engineBtn');
+  const engineBtnIcon = document.getElementById('engineBtnIcon');
+  const engineBtnLabel = document.getElementById('engineBtnLabel');
+  const voiceBtn = document.getElementById('voiceBtn');
+  const voiceBtnLabel = document.getElementById('voiceBtnLabel');
+  const modeBtn = document.getElementById('modeBtn');
+  const modeBtnIcon = document.getElementById('modeBtnIcon');
+  const modeBtnLabel = document.getElementById('modeBtnLabel');
+
+  playPauseBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlPlayPause' }));
+  stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlStop' }));
+
+  // Current values, kept in sync via the 'updateControlBar' message (see
+  // extension.ts) — used to show a checkmark on the right option and (for
+  // rate/engine/mode) the trigger button's own label.
+  let currentRate = 1;
+  let currentEngine = 'system';
+  let currentMode = 'auto';
+  let currentVoice = '';
+
+  const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+  const ENGINE_OPTIONS = [
+    { value: 'system', label: 'System', icon: 'device-desktop', description: 'Built-in OS voices, instant, works offline' },
+    { value: 'enhanced', label: 'Enhanced', icon: 'rocket', description: 'Higher-quality neural voices via Microsoft Edge, requires network' }
+  ];
+  const MODE_OPTIONS = [
+    { value: 'auto', label: 'Auto', icon: 'zap', description: 'Read new responses automatically as they arrive' },
+    { value: 'manual', label: 'Manual', icon: 'cursor', description: 'Only read when you press play' }
+  ];
+
+  // Generic popup menu (Speed/Engine/Mode/Voice all use this) — a small,
+  // positioned card of icon+label(+description) rows, closer to how the
+  // Claude Code chat panel's own mode picker looks than a native <select>.
+  let activePopup = null;
+
+  function closePopup() {
+    if (!activePopup) {
+      return;
+    }
+    activePopup.trigger.classList.remove('open');
+    activePopup.el.remove();
+    document.removeEventListener('mousedown', activePopup.onOutside, true);
+    document.removeEventListener('keydown', activePopup.onKey, true);
+    activePopup = null;
+  }
+
+  function positionPopup(popupEl, anchorEl) {
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const popupRect = popupEl.getBoundingClientRect();
+    const gap = 6;
+    let left = anchorRect.left;
+    if (left + popupRect.width > window.innerWidth - 8) {
+      left = window.innerWidth - popupRect.width - 8;
+    }
+    if (left < 8) {
+      left = 8;
+    }
+    let top = anchorRect.top - popupRect.height - gap;
+    if (top < 8) {
+      top = anchorRect.bottom + gap;
+    }
+    popupEl.style.left = left + 'px';
+    popupEl.style.top = top + 'px';
+  }
+
+  // opts: { title, items: [{value,label,description,icon,checked}],
+  //   searchable, loading, error, onSelect(value), onBack() }
+  function openPopup(anchorEl, opts) {
+    closePopup();
+    anchorEl.classList.add('open');
+
+    const popup = document.createElement('div');
+    popup.className = 'ctrl-popup';
+
+    const header = document.createElement('div');
+    header.className = 'ctrl-popup-header';
+    if (opts.onBack) {
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'ctrl-popup-back';
+      const backIcon = document.createElement('span');
+      backIcon.className = 'codicon codicon-chevron-left';
+      backBtn.appendChild(backIcon);
+      backBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        opts.onBack();
+      });
+      header.appendChild(backBtn);
+    }
+    const titleEl = document.createElement('span');
+    titleEl.textContent = opts.title;
+    header.appendChild(titleEl);
+    popup.appendChild(header);
+
+    let searchInput = null;
+    if (opts.searchable) {
+      searchInput = document.createElement('input');
+      searchInput.type = 'text';
+      searchInput.placeholder = 'Search…';
+      searchInput.className = 'ctrl-popup-search';
+      popup.appendChild(searchInput);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'ctrl-popup-list';
+    popup.appendChild(list);
+
+    function renderList() {
+      list.textContent = '';
+      if (opts.loading) {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-loading';
+        el.textContent = 'Loading…';
+        list.appendChild(el);
+        return;
+      }
+      if (opts.error) {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-error';
+        el.textContent = opts.error;
+        list.appendChild(el);
+        return;
+      }
+      const filterText = searchInput ? searchInput.value.trim().toLowerCase() : '';
+      const items = filterText
+        ? opts.items.filter((it) => it.label.toLowerCase().indexOf(filterText) !== -1)
+        : opts.items;
+      if (items.length === 0) {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-empty';
+        el.textContent = 'No matches.';
+        list.appendChild(el);
+        return;
+      }
+      items.forEach((item) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'ctrl-popup-item' + (item.checked ? ' checked' : '');
+        if (item.icon) {
+          const icon = document.createElement('span');
+          icon.className = 'codicon codicon-' + item.icon;
+          row.appendChild(icon);
+        } else {
+          const spacer = document.createElement('span');
+          spacer.className = 'ctrl-popup-item-spacer';
+          row.appendChild(spacer);
+        }
+        const text = document.createElement('span');
+        text.className = 'ctrl-popup-item-text';
+        const label = document.createElement('span');
+        label.className = 'ctrl-popup-item-label';
+        label.textContent = item.label;
+        text.appendChild(label);
+        if (item.description) {
+          const desc = document.createElement('span');
+          desc.className = 'ctrl-popup-item-desc';
+          desc.textContent = item.description;
+          text.appendChild(desc);
+        }
+        row.appendChild(text);
+        if (item.checked) {
+          const check = document.createElement('span');
+          check.className = 'codicon codicon-check';
+          row.appendChild(check);
+        }
+        row.addEventListener('click', () => opts.onSelect(item.value));
+        list.appendChild(row);
+      });
+    }
+    renderList();
+    if (searchInput) {
+      searchInput.addEventListener('input', renderList);
+      searchInput.addEventListener('click', (e) => e.stopPropagation());
+    }
+
+    document.body.appendChild(popup);
+    positionPopup(popup, anchorEl);
+    if (searchInput) {
+      searchInput.focus();
+    }
+
+    const onOutside = (e) => {
+      if (!popup.contains(e.target) && !anchorEl.contains(e.target)) {
+        closePopup();
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        closePopup();
+      }
+    };
+    document.addEventListener('mousedown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+
+    activePopup = { el: popup, trigger: anchorEl, onOutside: onOutside, onKey: onKey };
+    return activePopup;
+  }
+
+  function isPopupOpenFor(anchorEl) {
+    return !!activePopup && activePopup.trigger === anchorEl;
+  }
+
+  rateBtn.addEventListener('click', () => {
+    if (isPopupOpenFor(rateBtn)) {
+      closePopup();
+      return;
+    }
+    openPopup(rateBtn, {
+      title: 'Speed',
+      items: RATE_OPTIONS.map((r) => ({ value: String(r), label: r + 'x', checked: r === currentRate })),
+      onSelect: (value) => {
+        closePopup();
+        vscode.postMessage({ type: 'controlSetRate', rate: parseFloat(value) });
+      }
+    });
+  });
+
+  engineBtn.addEventListener('click', () => {
+    if (isPopupOpenFor(engineBtn)) {
+      closePopup();
+      return;
+    }
+    openPopup(engineBtn, {
+      title: 'Voice Engine',
+      items: ENGINE_OPTIONS.map((o) => ({
+        value: o.value,
+        label: o.label,
+        icon: o.icon,
+        description: o.description,
+        checked: o.value === currentEngine
+      })),
+      onSelect: (value) => {
+        closePopup();
+        vscode.postMessage({ type: 'controlSetEngine', engine: value });
+      }
+    });
+  });
+
+  modeBtn.addEventListener('click', () => {
+    if (isPopupOpenFor(modeBtn)) {
+      closePopup();
+      return;
+    }
+    openPopup(modeBtn, {
+      title: 'Playback',
+      items: MODE_OPTIONS.map((o) => ({
+        value: o.value,
+        label: o.label,
+        icon: o.icon,
+        description: o.description,
+        checked: o.value === currentMode
+      })),
+      onSelect: (value) => {
+        closePopup();
+        vscode.postMessage({ type: 'controlSetMode', mode: value });
+      }
+    });
+  });
+
+  // --- Voice popup: a flat searchable list for System, a language/region/
+  // voice drill-down for Enhanced (300+ voices across 140+ locales fetched
+  // once from the extension host and cached here — see requestEnhancedVoices
+  // below — then grouped/searched entirely client-side for instant
+  // navigation between levels, mirroring extension.ts's own QuickPick-based
+  // selectEnhancedVoice, just rendered as this panel's popup instead). ---
+  let enhancedVoicesCache = null;
+  let enhancedVoicesFetchError = null;
+  let localeDisplayNamesInstance = null;
+
+  function baseLanguageOf(locale) {
+    return locale.split('-')[0];
+  }
+
+  function localeDisplayName(locale) {
+    try {
+      localeDisplayNamesInstance = localeDisplayNamesInstance || new Intl.DisplayNames(['en'], { type: 'language' });
+      return localeDisplayNamesInstance.of(locale) || locale;
+    } catch (e) {
+      return locale;
+    }
+  }
+
+  // Enhanced's raw voice names (e.g. "en-GB-RyanNeural") aren't friendly for
+  // the trigger label — swap in the friendlyName once the voice list has
+  // been fetched at least once (see the 'enhancedVoices' message handler).
+  function friendlyVoiceLabel(voice) {
+    if (!voice) {
+      return 'Voice…';
+    }
+    if (currentEngine === 'enhanced' && enhancedVoicesCache) {
+      const match = enhancedVoicesCache.find((v) => v.name === voice);
+      if (match) {
+        return match.friendlyName;
+      }
+    }
+    return voice;
+  }
+
+  function openSystemVoicePopup() {
+    const voices = speechSynthesis.getVoices();
+    const items = voices.map((v) => ({
+      value: v.name,
+      label: v.name,
+      description: v.lang + (v.default ? ' (default)' : ''),
+      checked: v.name === currentVoice
+    }));
+    openPopup(voiceBtn, {
+      title: 'Voice',
+      searchable: items.length > 8,
+      items: items,
+      onSelect: (value) => {
+        closePopup();
+        vscode.postMessage({ type: 'controlSetVoice', engine: 'system', voice: value });
+      }
+    });
+  }
+
+  function groupEnhancedVoicesByBaseLanguage() {
+    const localesByBaseLang = new Map();
+    const locales = [];
+    enhancedVoicesCache.forEach((v) => {
+      if (locales.indexOf(v.locale) === -1) {
+        locales.push(v.locale);
+      }
+    });
+    locales.forEach((locale) => {
+      const base = baseLanguageOf(locale);
+      if (!localesByBaseLang.has(base)) {
+        localesByBaseLang.set(base, []);
+      }
+      localesByBaseLang.get(base).push(locale);
+    });
+    return localesByBaseLang;
+  }
+
+  function renderEnhancedLanguageLevel() {
+    const localesByBaseLang = groupEnhancedVoicesByBaseLanguage();
+    const currentEntry = enhancedVoicesCache.find((v) => v.name === currentVoice);
+    const currentBaseLang = currentEntry ? baseLanguageOf(currentEntry.locale) : undefined;
+    const baseLangs = [...localesByBaseLang.keys()].sort((a, b) => {
+      const aEn = a === 'en' ? 0 : 1;
+      const bEn = b === 'en' ? 0 : 1;
+      return aEn - bEn || localeDisplayName(a).localeCompare(localeDisplayName(b));
+    });
+    const items = baseLangs.map((base) => {
+      const regions = localesByBaseLang.get(base);
+      const voiceCount = enhancedVoicesCache.filter((v) => baseLanguageOf(v.locale) === base).length;
+      return {
+        value: base,
+        label: localeDisplayName(base),
+        description: regions.length > 1 ? regions.length + ' regions · ' + voiceCount + ' voice(s)' : voiceCount + ' voice(s)',
+        checked: base === currentBaseLang
+      };
+    });
+    openPopup(voiceBtn, {
+      title: 'Voice — Language',
+      searchable: true,
+      items: items,
+      onSelect: (base) => {
+        const regions = localesByBaseLang.get(base).slice().sort((a, b) => localeDisplayName(a).localeCompare(localeDisplayName(b)));
+        if (regions.length > 1) {
+          renderEnhancedRegionLevel(base, regions);
+        } else {
+          renderEnhancedVoiceLevel(regions[0], base, regions);
+        }
+      }
+    });
+  }
+
+  function renderEnhancedRegionLevel(base, regions) {
+    const currentEntry = enhancedVoicesCache.find((v) => v.name === currentVoice);
+    const currentLocale = currentEntry ? currentEntry.locale : undefined;
+    const items = regions.map((locale) => ({
+      value: locale,
+      label: localeDisplayName(locale),
+      description: locale + ' · ' + enhancedVoicesCache.filter((v) => v.locale === locale).length + ' voice(s)',
+      checked: locale === currentLocale
+    }));
+    openPopup(voiceBtn, {
+      title: 'Voice — ' + localeDisplayName(base),
+      searchable: items.length > 8,
+      items: items,
+      onBack: renderEnhancedLanguageLevel,
+      onSelect: (locale) => renderEnhancedVoiceLevel(locale, base, regions)
+    });
+  }
+
+  function renderEnhancedVoiceLevel(locale, base, regions) {
+    const voicesInLocale = enhancedVoicesCache
+      .filter((v) => v.locale === locale)
+      .slice()
+      .sort((a, b) => a.friendlyName.localeCompare(b.friendlyName));
+    const items = voicesInLocale.map((v) => ({
+      value: v.name,
+      label: v.friendlyName,
+      description: v.locale + ' · ' + v.gender,
+      checked: v.name === currentVoice
+    }));
+    openPopup(voiceBtn, {
+      title: 'Voice — ' + localeDisplayName(locale),
+      searchable: items.length > 8,
+      items: items,
+      onBack: () => {
+        if (regions.length > 1) {
+          renderEnhancedRegionLevel(base, regions);
+        } else {
+          renderEnhancedLanguageLevel();
+        }
+      },
+      onSelect: (voiceName) => {
+        closePopup();
+        vscode.postMessage({ type: 'controlSetVoice', engine: 'enhanced', voice: voiceName });
+      }
+    });
+  }
+
+  function openEnhancedVoicePopup() {
+    if (enhancedVoicesFetchError) {
+      openPopup(voiceBtn, { title: 'Voice', items: [], error: enhancedVoicesFetchError });
+      return;
+    }
+    if (!enhancedVoicesCache) {
+      openPopup(voiceBtn, { title: 'Voice', items: [], loading: true });
+      vscode.postMessage({ type: 'requestEnhancedVoices' });
+      return;
+    }
+    renderEnhancedLanguageLevel();
+  }
+
+  voiceBtn.addEventListener('click', () => {
+    if (isPopupOpenFor(voiceBtn)) {
+      closePopup();
+      return;
+    }
+    if (currentEngine === 'enhanced') {
+      openEnhancedVoicePopup();
+    } else {
+      openSystemVoicePopup();
+    }
+  });
 
   // Bounded history of responses so the transcript stays persistent and
   // clickable (see replayFromWord) instead of being wiped on every new
@@ -549,6 +1321,8 @@ function buildHtml(): string {
       state === 'speaking' ? 'Speaking (' + queue.length + ' more queued)...' :
       state === 'paused' ? 'Paused.' :
       'Idle.';
+    playPauseIcon.className = 'codicon ' + (state === 'speaking' ? 'codicon-debug-pause' : 'codicon-play');
+    playPauseBtn.title = state === 'speaking' ? 'Pause' : state === 'paused' ? 'Resume' : 'Play last response';
     vscode.postMessage({ type: 'playbackState', state: state });
   }
 
@@ -720,7 +1494,16 @@ function buildHtml(): string {
     reportState();
   }
 
+  // Renders the item into the transcript immediately, regardless of whether
+  // anything is currently playing or paused — otherwise text arriving while
+  // paused (or while playback is still working through an earlier backlog)
+  // wouldn't show up until its turn to actually be spoken, well after it was
+  // received. startTts/startAudio's own wordSpans-presence check means this
+  // render is never repeated once the item's turn to play actually comes.
   function enqueue(item) {
+    if (!item.wordSpans) {
+      renderTextWithWordSpans(item);
+    }
     queue.push(item);
     if (!current && !paused) {
       speakNext();
@@ -729,13 +1512,16 @@ function buildHtml(): string {
 
   // Click-to-replay: stops whatever's currently playing (without touching
   // the transcript itself) and plays this chunk from the clicked word
-  // onward, then continues into the rest of its response's already-
-  // rendered chunks (entry.items, in original order) the same way it would
-  // have played through them the first time — otherwise clicking a word
-  // near the start of a response would replay just that one chunk and
-  // stop, leaving the rest of the response unspoken. Chunks still waiting
-  // in the global queue (not yet rendered/played) are untouched: they're
-  // disjoint from entry.items and keep their place after the resumed ones.
+  // onward, then continues into the rest of its response's chunks
+  // (entry.items, in original order) the same way it would have played
+  // through them the first time — otherwise clicking a word near the start
+  // of a response would replay just that one chunk and stop, leaving the
+  // rest of the response unspoken. Since chunks are now rendered as soon as
+  // they arrive (see enqueue) rather than only once played, entry.items can
+  // include chunks still sitting unplayed in the global queue — those are
+  // filtered out of the resumed set (they'll play in their existing turn)
+  // and the clicked item itself is pulled out of the queue if it was one of
+  // them, since it's the one becoming current here.
   function replayFromWord(item, wordIndex) {
     speakToken++;
     const token = speakToken;
@@ -745,14 +1531,20 @@ function buildHtml(): string {
       audioEl.pause();
     }
     paused = false;
-    current = item;
     item.suppressAdvance = false;
+
+    const queuedIdx = queue.indexOf(item);
+    if (queuedIdx !== -1) {
+      queue.splice(queuedIdx, 1);
+    }
+    current = item;
 
     const entry = item._responseEntry;
     if (entry) {
       const idx = entry.items.indexOf(item);
       if (idx !== -1) {
-        queue.unshift(...entry.items.slice(idx + 1));
+        const resumeItems = entry.items.slice(idx + 1).filter((it) => !queue.includes(it));
+        queue.unshift(...resumeItems);
       }
     }
 
@@ -943,6 +1735,42 @@ function buildHtml(): string {
           voices: voices.map((v) => ({ name: v.name, lang: v.lang, default: v.default }))
         });
       });
+    } else if (message.type === 'updateControlBar') {
+      if (message.rate !== undefined) {
+        currentRate = message.rate;
+        rateBtnLabel.textContent = message.rate + 'x';
+      }
+      if (message.engine) {
+        currentEngine = message.engine;
+        engineBtnLabel.textContent = message.engine === 'enhanced' ? 'Enhanced' : 'System';
+        engineBtnIcon.className = 'ctrl-icon codicon codicon-' + (message.engine === 'enhanced' ? 'rocket' : 'device-desktop');
+      }
+      if (message.mode) {
+        currentMode = message.mode;
+        modeBtnLabel.textContent = message.mode === 'auto' ? 'Auto' : 'Manual';
+        modeBtnIcon.className = 'ctrl-icon codicon codicon-' + (message.mode === 'auto' ? 'zap' : 'cursor');
+      }
+      if (message.voice !== undefined) {
+        currentVoice = message.voice;
+        voiceBtnLabel.textContent = friendlyVoiceLabel(message.voice);
+      }
+    } else if (message.type === 'enhancedVoices') {
+      enhancedVoicesCache = message.voices || [];
+      enhancedVoicesFetchError = null;
+      voiceBtnLabel.textContent = friendlyVoiceLabel(currentVoice);
+      if (isPopupOpenFor(voiceBtn)) {
+        renderEnhancedLanguageLevel();
+      }
+    } else if (message.type === 'enhancedVoicesError') {
+      enhancedVoicesFetchError = message.message || 'Could not load Enhanced voices.';
+      if (isPopupOpenFor(voiceBtn)) {
+        openPopup(voiceBtn, { title: 'Voice', items: [], error: enhancedVoicesFetchError });
+      }
+    } else if (message.type === 'restartLastResponse') {
+      const entry = responseHistory[responseHistory.length - 1];
+      if (entry && entry.items.length > 0) {
+        replayFromWord(entry.items[0], 0);
+      }
     }
   });
 })();

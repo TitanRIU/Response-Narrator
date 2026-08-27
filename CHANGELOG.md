@@ -4,6 +4,17 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.10] - 2026-08-27
+
+### Changed
+
+- All playback controls now live in the Response Narrator panel itself instead of the status bar: Play/Pause, Stop, Speed, Voice Engine, Voice, and Playback mode are each a button on a control bar at the bottom of the panel, opening a small popup (a searchable list for Voice, with a language → region → voice drill-down for Enhanced's 300+ voices).
+- The status bar's **Narrator** item now opens the panel directly. The separate Play/Pause and Stop status bar buttons are gone, folded into the panel's own controls. The full settings menu (same options, plus Report Issue / Give Feedback) is still available via the "Response Narrator: Open Menu" command.
+
+### Added
+
+- Pressing Play on the last response now handles all three cases correctly: fresh content plays from the start, pressing Play again while a response is still streaming in (Manual mode) speaks only the new remainder into the same transcript card, and pressing Play again after a response has fully finished restarts it instead of rendering a duplicate card.
+
 ## [0.1.9] - 2026-08-13
 
 ### Added
