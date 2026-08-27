@@ -4,22 +4,32 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.1.10] - 2026-08-27
-
-### Changed
-
-- All playback controls now live in the Response Narrator panel itself instead of the status bar: Play/Pause, Stop, Skip Back/Forward, Speed, Voice Engine, Voice, and Playback mode are each a button on a control bar at the bottom of the panel, opening a small popup (a searchable list for Voice, with a language → region → voice drill-down for Enhanced's 300+ voices).
-- The status bar's **Narrator** item now opens the panel directly. The separate Play/Pause and Stop status bar buttons are gone, folded into the panel's own controls. The full settings menu (same options, plus Report Issue / Give Feedback) is still available via the "Response Narrator: Open Menu" command.
-- The control bar uses real VS Code icons throughout (matching the ones already used in the settings menu), with Play/Pause and Stop as square accent buttons in the same style as Claude Code's own send button. The Voice Engine and Playback mode buttons' icons switch to match whichever option is currently selected.
+## [0.1.11] - 2026-08-27
 
 ### Added
 
-- Pressing Play on the last response now handles all three cases correctly: fresh content plays from the start, pressing Play again while a response is still streaming in (Manual mode) speaks only the new remainder into the same transcript card, and pressing Play again after a response has fully finished restarts it instead of rendering a duplicate card.
 - Skip Back and Skip Forward buttons step through a response's individual paragraphs one at a time, continuing into the next (or previous) response once you reach either end, so you can move directly to the part you want to hear instead of only playing straight through. Skip Back also works right after playback has stopped or run out, replaying the last paragraph instead of doing nothing.
+
+### Changed
+
+- The control bar uses real VS Code icons throughout (matching the ones already used in the settings menu), with Play/Pause and Stop as square accent buttons in the same style as Claude Code's own send button. The Voice Engine and Playback mode buttons' icons switch to match whichever option is currently selected.
+- The status bar's **Narrator** item now opens the Response Narrator panel directly via a new "Response Narrator: Open Window" command, instead of the settings menu.
 
 ### Fixed
 
 - A response's trailing paragraph(s) could get silently merged into the paragraph before them if the combined length was short enough, so that paragraph had no transcript "sub-section" of its own and was unreachable via Skip or click-to-replay. Responses are now split into chunks by paragraph first, so every paragraph gets its own chunk regardless of length, and only a single overlong paragraph is still split further.
+- For the Enhanced engine, one response's still-in-flight last chunk could occasionally arrive after the next response's first chunk and get attributed to the wrong transcript card. Chunks now carry an explicit response id so the panel routes each one to the right card regardless of arrival order.
+
+## [0.1.10] - 2026-08-27
+
+### Changed
+
+- All playback controls now live in the Response Narrator panel itself instead of the status bar: Play/Pause, Stop, Speed, Voice Engine, Voice, and Playback mode are each a button on a control bar at the bottom of the panel, opening a small popup (a searchable list for Voice, with a language → region → voice drill-down for Enhanced's 300+ voices).
+- The status bar's **Narrator** item now opens the panel directly. The separate Play/Pause and Stop status bar buttons are gone, folded into the panel's own controls. The full settings menu (same options, plus Report Issue / Give Feedback) is still available via the "Response Narrator: Open Menu" command.
+
+### Added
+
+- Pressing Play on the last response now handles all three cases correctly: fresh content plays from the start, pressing Play again while a response is still streaming in (Manual mode) speaks only the new remainder into the same transcript card, and pressing Play again after a response has fully finished restarts it instead of rendering a duplicate card.
 
 ## [0.1.9] - 2026-08-13
 
