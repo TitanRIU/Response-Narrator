@@ -69,18 +69,37 @@ function splitOnce(text: string): { head: string; rest: string } | undefined {
 }
 
 /**
- * Splits long text into a sequence of sentence-sized chunks. Two reasons to
- * chunk, not just one: it lets a long response start speaking after the
- * first chunk synthesizes instead of waiting for the whole thing, and it
- * keeps any single request to Microsoft's TTS service short enough to avoid
- * "Stream closed before the synthesis completed" — observed in practice
- * when sending an entire multi-paragraph response as one request. Returns a
- * single-element array unchanged when text is already short enough that
- * splitting wouldn't help.
+ * Splits long text into a sequence of chunks, each becoming its own entry in
+ * the transcript and its own turn in the playback queue. Splits on paragraph
+ * breaks (a blank line) first — every paragraph becomes its own chunk, even
+ * a short one, so the transcript's per-chunk "sub-section" rendering (and
+ * Skip Forward/Back, and click-to-replay) actually lines up with what's
+ * visually a distinct paragraph, instead of a short trailing paragraph
+ * silently fusing into its neighbor. Only a single paragraph still longer
+ * than SPLIT_THRESHOLD_CHARS gets split further (see splitParagraph), for
+ * two reasons: it lets a long response start speaking after the first chunk
+ * synthesizes instead of waiting for the whole thing, and it keeps any
+ * single request to Microsoft's TTS service short enough to avoid "Stream
+ * closed before the synthesis completed" — observed in practice when
+ * sending an entire long paragraph as one request.
  */
 export function splitIntoSpeechChunks(text: string): string[] {
+	const trimmed = text.trim();
+	const paragraphs = trimmed
+		.split(/\n\s*\n/)
+		.map((paragraph) => paragraph.trim())
+		.filter((paragraph) => paragraph.length > 0);
 	const chunks: string[] = [];
-	let remaining = text.trim();
+	for (const paragraph of paragraphs) {
+		chunks.push(...splitParagraph(paragraph));
+	}
+	return chunks;
+}
+
+/** Splits one paragraph into sentence-sized chunks once it's over SPLIT_THRESHOLD_CHARS; returned as-is otherwise. */
+function splitParagraph(text: string): string[] {
+	const chunks: string[] = [];
+	let remaining = text;
 	while (remaining.length > SPLIT_THRESHOLD_CHARS) {
 		const split = splitOnce(remaining);
 		if (!split) {

@@ -86,4 +86,26 @@ suite('splitIntoSpeechChunks', () => {
 		const chunks = splitIntoSpeechChunks(text);
 		assert.strictEqual(chunks.join(' ').replace(/\s+/g, ' '), text.replace(/\s+/g, ' '));
 	});
+
+	test('gives every paragraph its own chunk, even short trailing ones well under the splitting threshold', () => {
+		// Regression test: short paragraphs used to get silently fused into
+		// one chunk once the combined remainder dropped under
+		// SPLIT_THRESHOLD_CHARS, so a response's last paragraph (or two)
+		// wouldn't get its own transcript "sub-section" — making it
+		// unreachable via Skip Forward/Back and click-to-replay.
+		const text = 'Section 1.1: short.\n\nSection 1.2: also short.\n\nSection 1.3: short too.';
+		assert.deepStrictEqual(splitIntoSpeechChunks(text), [
+			'Section 1.1: short.',
+			'Section 1.2: also short.',
+			'Section 1.3: short too.'
+		]);
+	});
+
+	test('still splits an individual paragraph that is itself over the splitting threshold', () => {
+		const shortParagraph = 'A short intro paragraph.';
+		const longParagraph = ('This is one sentence in a long paragraph about testing chunking behavior. ').repeat(6).trim();
+		const chunks = splitIntoSpeechChunks(`${shortParagraph}\n\n${longParagraph}`);
+		assert.strictEqual(chunks[0], shortParagraph);
+		assert.ok(chunks.length > 2, `expected the long paragraph to itself split into more than one chunk, got ${chunks.length} chunks total`);
+	});
 });

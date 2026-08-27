@@ -8,12 +8,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Changed
 
-- All playback controls now live in the Response Narrator panel itself instead of the status bar: Play/Pause, Stop, Speed, Voice Engine, Voice, and Playback mode are each a button on a control bar at the bottom of the panel, opening a small popup (a searchable list for Voice, with a language → region → voice drill-down for Enhanced's 300+ voices).
+- All playback controls now live in the Response Narrator panel itself instead of the status bar: Play/Pause, Stop, Skip Back/Forward, Speed, Voice Engine, Voice, and Playback mode are each a button on a control bar at the bottom of the panel, opening a small popup (a searchable list for Voice, with a language → region → voice drill-down for Enhanced's 300+ voices).
 - The status bar's **Narrator** item now opens the panel directly. The separate Play/Pause and Stop status bar buttons are gone, folded into the panel's own controls. The full settings menu (same options, plus Report Issue / Give Feedback) is still available via the "Response Narrator: Open Menu" command.
+- The control bar uses real VS Code icons throughout (matching the ones already used in the settings menu), with Play/Pause and Stop as square accent buttons in the same style as Claude Code's own send button. The Voice Engine and Playback mode buttons' icons switch to match whichever option is currently selected.
 
 ### Added
 
 - Pressing Play on the last response now handles all three cases correctly: fresh content plays from the start, pressing Play again while a response is still streaming in (Manual mode) speaks only the new remainder into the same transcript card, and pressing Play again after a response has fully finished restarts it instead of rendering a duplicate card.
+- Skip Back and Skip Forward buttons step through a response's individual paragraphs one at a time, continuing into the next (or previous) response once you reach either end, so you can move directly to the part you want to hear instead of only playing straight through. Skip Back also works right after playback has stopped or run out, replaying the last paragraph instead of doing nothing.
+
+### Fixed
+
+- A response's trailing paragraph(s) could get silently merged into the paragraph before them if the combined length was short enough, so that paragraph had no transcript "sub-section" of its own and was unreachable via Skip or click-to-replay. Responses are now split into chunks by paragraph first, so every paragraph gets its own chunk regardless of length, and only a single overlong paragraph is still split further.
 
 ## [0.1.9] - 2026-08-13
 

@@ -111,26 +111,38 @@ export class SpeechPanel {
 		this.ensurePanel().reveal(undefined, false);
 	}
 
-	speak(text: string, options: SpeakOptions = {}): void {
+	/**
+	 * `responseId` (see notifyNewResponse) tells the panel which response's
+	 * transcript card this chunk belongs to, since — for the Enhanced engine
+	 * — chunk fetches from different responses run concurrently and can
+	 * resolve out of order: without an explicit id, a response's slow-to-
+	 * arrive last chunk could land after the next response's first chunk has
+	 * already switched the panel's "current card", and get appended to the
+	 * wrong one.
+	 */
+	speak(text: string, options: SpeakOptions, responseId: number): void {
 		const panel = this.ensurePanel();
-		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice });
+		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice, responseId });
 	}
 
 	/**
 	 * Marks the start of a new response in the persistent transcript, before
 	 * its first chunk is spoken — the panel has no other way to tell "this
-	 * next chunk begins a new response" apart from "another chunk of the
-	 * one already in progress", since chunk messages (speak/playAudio)
-	 * carry no such distinction themselves.
+	 * next chunk begins a new response" apart from "another chunk of the one
+	 * already in progress". `responseId` is a caller-assigned id (extension.ts
+	 * increments a counter) that every speak()/playAudio() call for this
+	 * response must then be tagged with, so the panel can route each chunk to
+	 * the right transcript card even if chunks from different responses
+	 * arrive out of order (see speak's doc).
 	 */
-	notifyNewResponse(): void {
-		void this.panel?.webview.postMessage({ type: 'newResponse' });
+	notifyNewResponse(responseId: number): void {
+		void this.panel?.webview.postMessage({ type: 'newResponse', responseId });
 	}
 
-	/** Queues pre-synthesized audio (base64-encoded) for playback, e.g. from the Enhanced engine. */
-	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[] = []): void {
+	/** Queues pre-synthesized audio (base64-encoded) for playback, e.g. from the Enhanced engine. See speak's doc for `responseId`. */
+	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[], responseId: number): void {
 		const panel = this.ensurePanel();
-		void panel.webview.postMessage({ type: 'playAudio', base64: base64Data, rate, text, words });
+		void panel.webview.postMessage({ type: 'playAudio', base64: base64Data, rate, text, words, responseId });
 	}
 
 	/**
@@ -397,7 +409,9 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
   }
   #statusBar #playPauseBtn,
-  #statusBar #stopBtn {
+  #statusBar #stopBtn,
+  #statusBar #skipBackBtn,
+  #statusBar #skipForwardBtn {
     opacity: 1;
     width: 1.8rem;
     height: 1.8rem;
@@ -414,11 +428,15 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   #statusBar #playPauseBtn:hover {
     background: var(--vscode-button-hoverBackground, #1177bb);
   }
-  #statusBar #stopBtn {
+  #statusBar #stopBtn,
+  #statusBar #skipBackBtn,
+  #statusBar #skipForwardBtn {
     background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
     color: var(--vscode-foreground);
   }
-  #statusBar #stopBtn:hover {
+  #statusBar #stopBtn:hover,
+  #statusBar #skipBackBtn:hover,
+  #statusBar #skipForwardBtn:hover {
     background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.14));
   }
   #optionsRow .ctrl-icon {
@@ -599,7 +617,9 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   <div id="statusRow">
     <p id="status">Idle.</p>
     <div id="transportButtons">
+      <button id="skipBackBtn" type="button" title="Previous section"><span class="codicon codicon-chevron-left"></span></button>
       <button id="playPauseBtn" type="button" title="Play"><span id="playPauseIcon" class="codicon codicon-play"></span></button>
+      <button id="skipForwardBtn" type="button" title="Next section"><span class="codicon codicon-chevron-right"></span></button>
       <button id="stopBtn" type="button" title="Stop"><span class="codicon codicon-debug-stop"></span></button>
     </div>
   </div>
@@ -631,8 +651,10 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   const vscode = acquireVsCodeApi();
   const statusEl = document.getElementById('status');
   const textDisplayEl = document.getElementById('textDisplay');
+  const skipBackBtn = document.getElementById('skipBackBtn');
   const playPauseBtn = document.getElementById('playPauseBtn');
   const playPauseIcon = document.getElementById('playPauseIcon');
+  const skipForwardBtn = document.getElementById('skipForwardBtn');
   const stopBtn = document.getElementById('stopBtn');
   const rateBtn = document.getElementById('rateBtn');
   const rateBtnLabel = document.getElementById('rateBtnLabel');
@@ -647,6 +669,10 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
 
   playPauseBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlPlayPause' }));
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlStop' }));
+  // Skip Back/Forward are purely local to the webview (no extension-host
+  // round trip like Play/Stop) — see skipBy/skipToItem below.
+  skipBackBtn.addEventListener('click', () => skipBy(-1));
+  skipForwardBtn.addEventListener('click', () => skipBy(1));
 
   // Current values, kept in sync via the 'updateControlBar' message (see
   // extension.ts) — used to show a checkmark on the right option and (for
@@ -1084,36 +1110,49 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   const responseHistory = [];
   let currentResponseEntry = null;
 
-  function startNewResponseEntry() {
+  function startNewResponseEntry(responseId) {
     const entryEl = document.createElement('div');
     entryEl.className = 'response-entry';
     textDisplayEl.appendChild(entryEl);
-    currentResponseEntry = { el: entryEl, items: [] };
+    currentResponseEntry = { el: entryEl, items: [], responseId: responseId };
     responseHistory.push(currentResponseEntry);
     while (responseHistory.length > MAX_HISTORY_RESPONSES) {
       const oldest = responseHistory.shift();
       oldest.el.remove();
     }
+    return currentResponseEntry;
   }
 
-  // Defensive fallback for the (should-be-impossible) case a chunk arrives
-  // before the extension host's first 'newResponse' signal.
-  function ensureCurrentResponseEntry() {
-    if (!currentResponseEntry) {
-      startNewResponseEntry();
+  // Looks up the entry a chunk belongs to by the responseId its speak/
+  // playAudio message carried, rather than trusting "whatever entry is
+  // current right now" — needed because, for the Enhanced engine, one
+  // response's chunk fetches can still be in flight when the next response's
+  // own first chunk already arrived and switched currentResponseEntry, so a
+  // late chunk could otherwise land in the wrong (next) response's card.
+  // Falls back to "current, creating one if needed" for the id-less/
+  // should-be-impossible case of a chunk arriving before any 'newResponse',
+  // or for a response so old its entry already aged out of responseHistory.
+  function getEntryForResponse(responseId) {
+    if (responseId !== undefined) {
+      for (let i = responseHistory.length - 1; i >= 0; i--) {
+        if (responseHistory[i].responseId === responseId) {
+          return responseHistory[i];
+        }
+      }
     }
-    return currentResponseEntry;
+    return currentResponseEntry || startNewResponseEntry(responseId);
   }
 
   // Renders item.text as a sequence of per-word span elements (splitting on
   // whitespace, preserving it as plain text nodes between them) so live
   // highlighting is just toggling a class on the right span instead of
-  // re-rendering text on every word boundary. Appends into the current
-  // response's own container rather than replacing #textDisplay's content,
-  // so earlier chunks/responses stay visible. Each span carries a direct
-  // back-reference to the item and its own index for click-to-replay.
+  // re-rendering text on every word boundary. Appends into this item's own
+  // response's container (see getEntryForResponse) rather than replacing
+  // #textDisplay's content, so earlier chunks/responses stay visible. Each
+  // span carries a direct back-reference to the item and its own index for
+  // click-to-replay.
   function renderTextWithWordSpans(item) {
-    const entry = ensureCurrentResponseEntry();
+    const entry = getEntryForResponse(item.responseId);
     const container = entry.el;
     item._responseEntry = entry;
     entry.items.push(item);
@@ -1510,19 +1549,13 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     }
   }
 
-  // Click-to-replay: stops whatever's currently playing (without touching
-  // the transcript itself) and plays this chunk from the clicked word
-  // onward, then continues into the rest of its response's chunks
-  // (entry.items, in original order) the same way it would have played
-  // through them the first time — otherwise clicking a word near the start
-  // of a response would replay just that one chunk and stop, leaving the
-  // rest of the response unspoken. Since chunks are now rendered as soon as
-  // they arrive (see enqueue) rather than only once played, entry.items can
-  // include chunks still sitting unplayed in the global queue — those are
-  // filtered out of the resumed set (they'll play in their existing turn)
-  // and the clicked item itself is pulled out of the queue if it was one of
-  // them, since it's the one becoming current here.
-  function replayFromWord(item, wordIndex) {
+  // Shared setup for handing playback over to a specific item: cancels
+  // whatever's currently playing, clears the paused flag, pulls the item out
+  // of the queue if it was already sitting there, and takes it over as
+  // current. Returns the fresh token to start playback with. Used by both
+  // replayFromWord (click a word) and skipToItem (Skip Back/Forward) — they
+  // differ only in which items get queued up to resume with afterward.
+  function takeOverPlayback(item) {
     speakToken++;
     const token = speakToken;
     stopHighlightPoll();
@@ -1538,6 +1571,21 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
       queue.splice(queuedIdx, 1);
     }
     current = item;
+    return token;
+  }
+
+  // Click-to-replay: stops whatever's currently playing (without touching
+  // the transcript itself) and plays this chunk from the clicked word
+  // onward, then continues into the rest of its response's chunks
+  // (entry.items, in original order) the same way it would have played
+  // through them the first time — otherwise clicking a word near the start
+  // of a response would replay just that one chunk and stop, leaving the
+  // rest of the response unspoken. Since chunks are now rendered as soon as
+  // they arrive (see enqueue) rather than only once played, entry.items can
+  // include chunks still sitting unplayed in the global queue — those are
+  // filtered out of the resumed set (they'll play in their existing turn).
+  function replayFromWord(item, wordIndex) {
+    const token = takeOverPlayback(item);
 
     const entry = item._responseEntry;
     if (entry) {
@@ -1557,6 +1605,71 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     }
   }
 
+  // Flattens every rendered chunk across the visible response history
+  // (oldest to newest) into one list — the same "sub-sections" the
+  // transcript itself shows. This is the timeline Skip Back/Forward step
+  // through, unlike click-to-replay, which deliberately stays within one
+  // response.
+  function getFlatItems() {
+    const items = [];
+    for (const entry of responseHistory) {
+      items.push(...entry.items);
+    }
+    return items;
+  }
+
+  // Jumps playback to the very start of the given item, then queues whatever
+  // comes after it across the whole flattened history (not just its own
+  // response) so playback continues naturally past a response boundary.
+  function skipToItem(item) {
+    const token = takeOverPlayback(item);
+
+    const flat = getFlatItems();
+    const idx = flat.indexOf(item);
+    if (idx !== -1) {
+      const resumeItems = flat.slice(idx + 1).filter((it) => !queue.includes(it));
+      queue.unshift(...resumeItems);
+    }
+
+    if (item.kind === 'audio') {
+      playAudioItem(item, token, 0);
+    } else {
+      startTts(item, token, 0);
+    }
+  }
+
+  // Moves to the next/previous chunk relative to whatever's currently
+  // playing (or, if paused, about to resume). No-ops at either end of the
+  // flattened history. When nothing is playing/queued at all (e.g. right
+  // after Stop, or playback simply ran out at the end) there's no "current"
+  // position to step from — Skip Back falls back to replaying the last
+  // rendered sub-section instead (the same "previous track on a stopped
+  // player" expectation most media controls have); Skip Forward has no
+  // equivalent obvious target from idle, so it stays a no-op.
+  function skipBy(direction) {
+    const reference = current || queue[0];
+    if (!reference) {
+      if (direction < 0) {
+        const flat = getFlatItems();
+        const last = flat[flat.length - 1];
+        if (last) {
+          skipToItem(last);
+        }
+      }
+      return;
+    }
+    const flat = getFlatItems();
+    const idx = flat.indexOf(reference);
+    if (idx === -1) {
+      return;
+    }
+    const target = flat[idx + direction];
+    if (!target) {
+      return;
+    }
+    skipToItem(target);
+  }
+
   textDisplayEl.addEventListener('click', (e) => {
     const span = e.target.closest ? e.target.closest('.word') : null;
     if (!span || !span._replayItem) {
@@ -1568,11 +1681,11 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'newResponse') {
-      startNewResponseEntry();
+      startNewResponseEntry(message.responseId);
     } else if (message.type === 'speak') {
-      enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0 });
+      enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0, responseId: message.responseId });
     } else if (message.type === 'playAudio') {
-      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0 });
+      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0, responseId: message.responseId });
     } else if (message.type === 'enhancedVoiceChanged') {
       if (current && current.kind === 'audio' && !paused) {
         const elapsed = audioEl ? audioEl.currentTime : 0;

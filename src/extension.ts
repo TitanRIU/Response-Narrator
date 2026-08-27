@@ -78,6 +78,16 @@ let lastCompletedResponse: string[] | undefined;
 let lastSpokenBuffer: string[] | undefined;
 let lastSpokenCount = 0;
 
+// Identifies which response's transcript card a chunk belongs to (see
+// SpeechPanel.speak's doc) — needed because, for the Enhanced engine, one
+// response's chunk fetches can still be in flight when the next response
+// starts its own, and those fetches can resolve in either order.
+// activeResponseId is the id every speak()/playAudio() call for whichever
+// response is currently being spoken must be tagged with; it's only
+// reassigned when a new response actually starts (see beginNewResponse).
+let responseIdCounter = 0;
+let activeResponseId = 0;
+
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Response Narrator');
 	speechPanel = new SpeechPanel(context);
@@ -202,6 +212,12 @@ function getScopedTranscriptRoots(): string[] {
 	);
 }
 
+/** Assigns a fresh response id and tells the panel a new transcript card should start, tagged with it (see activeResponseId's doc). */
+function beginNewResponse(): void {
+	activeResponseId = ++responseIdCounter;
+	speechPanel?.notifyNewResponse(activeResponseId);
+}
+
 async function startWatching(): Promise<void> {
 	const newWatcher = new TranscriptWatcher(getScopedTranscriptRoots());
 	resetResponseBuffers();
@@ -213,9 +229,9 @@ async function startWatching(): Promise<void> {
 		currentResponseChunks.push(utterance.text);
 		if (getPlaybackMode() === 'auto') {
 			if (isFirstChunkOfResponse) {
-				speechPanel?.notifyNewResponse();
+				beginNewResponse();
 			}
-			void speak(utterance.text);
+			void speak(utterance.text, activeResponseId);
 			lastSpokenBuffer = currentResponseChunks;
 			lastSpokenCount = currentResponseChunks.length;
 		}
@@ -270,8 +286,8 @@ function playLastResponse(): void {
 		// Never spoken from this buffer before — fully fresh content.
 		lastSpokenBuffer = chunks;
 		lastSpokenCount = chunks.length;
-		speechPanel?.notifyNewResponse();
-		void speak(chunks.join(' '));
+		beginNewResponse();
+		void speak(chunks.join(' '), activeResponseId);
 		return;
 	}
 	if (chunks.length > lastSpokenCount) {
@@ -281,7 +297,7 @@ function playLastResponse(): void {
 		// new remainder needs speaking, into that same card.
 		const remainder = chunks.slice(lastSpokenCount).join(' ');
 		lastSpokenCount = chunks.length;
-		void speak(remainder);
+		void speak(remainder, activeResponseId);
 		return;
 	}
 	// Same buffer, nothing new since it was fully spoken — a repeat Play
@@ -599,24 +615,24 @@ async function synthesizeWithFallback(
 	}
 }
 
-async function speak(text: string): Promise<void> {
+async function speak(text: string, responseId: number): Promise<void> {
 	if (getVoiceEngine() === 'enhanced') {
 		const generation = speechGeneration;
 		const chunks = splitIntoSpeechChunks(text);
 		if (chunks.length > 1) {
-			await speakEnhancedInChunks(chunks, generation);
+			await speakEnhancedInChunks(chunks, generation, responseId);
 			return;
 		}
 		await synthesizeWithFallback(
 			text,
 			(base64, rate, words) => {
 				if (generation === speechGeneration) {
-					speechPanel?.playAudio(base64, rate, text, words);
+					speechPanel?.playAudio(base64, rate, text, words, responseId);
 				}
 			},
 			(rate, voice) => {
 				if (generation === speechGeneration) {
-					speechPanel?.speak(text, { rate, voice });
+					speechPanel?.speak(text, { rate, voice }, responseId);
 				}
 			}
 		);
@@ -630,7 +646,7 @@ async function speak(text: string): Promise<void> {
 	// utterance. Sentence-sized utterances keep boundary tracking accurate
 	// and bound any staleness to at most one sentence.
 	for (const chunk of splitIntoSpeechChunks(text)) {
-		speechPanel?.speak(chunk, { rate: getRate(), voice: getVoiceSetting() || undefined });
+		speechPanel?.speak(chunk, { rate: getRate(), voice: getVoiceSetting() || undefined }, responseId);
 	}
 }
 
@@ -645,7 +661,7 @@ async function speak(text: string): Promise<void> {
  * a voice hand-off that supersedes this call stops it from continuing to
  * enqueue leftover chunks in the old voice.
  */
-async function speakEnhancedInChunks(chunks: string[], generation: number): Promise<void> {
+async function speakEnhancedInChunks(chunks: string[], generation: number, responseId: number): Promise<void> {
 	let previousDone: Promise<unknown> = Promise.resolve();
 	const allDone: Promise<unknown>[] = [];
 	for (const chunk of chunks) {
@@ -655,12 +671,12 @@ async function speakEnhancedInChunks(chunks: string[], generation: number): Prom
 				chunk,
 				(base64, rate, words) => {
 					if (generation === speechGeneration) {
-						speechPanel?.playAudio(base64, rate, chunk, words);
+						speechPanel?.playAudio(base64, rate, chunk, words, responseId);
 					}
 				},
 				(rate, voice) => {
 					if (generation === speechGeneration) {
-						speechPanel?.speak(chunk, { rate, voice });
+						speechPanel?.speak(chunk, { rate, voice }, responseId);
 					}
 				},
 				gate
@@ -697,7 +713,7 @@ async function handleResynthesis(token: number, text: string): Promise<void> {
 					if (isFirst) {
 						speechPanel?.provideResynthesizedAudio(token, base64, rate, chunk, words);
 					} else {
-						speechPanel?.playAudio(base64, rate, chunk, words);
+						speechPanel?.playAudio(base64, rate, chunk, words, activeResponseId);
 					}
 				},
 				(rate, voice) => {
@@ -707,7 +723,7 @@ async function handleResynthesis(token: number, text: string): Promise<void> {
 					if (isFirst) {
 						speechPanel?.provideResynthesizedFallback(token, chunk, rate, voice);
 					} else {
-						speechPanel?.speak(chunk, { rate, voice });
+						speechPanel?.speak(chunk, { rate, voice }, activeResponseId);
 					}
 				},
 				gate
