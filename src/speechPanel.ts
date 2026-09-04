@@ -13,6 +13,7 @@ export type PlaybackState = 'idle' | 'speaking' | 'paused';
 interface SpeakOptions {
 	rate?: number;
 	voice?: string;
+	volume?: number;
 }
 
 /**
@@ -62,6 +63,7 @@ export class SpeechPanel {
 	private readonly setModeEmitter = new vscode.EventEmitter<'auto' | 'manual'>();
 	private readonly requestEnhancedVoicesEmitter = new vscode.EventEmitter<void>();
 	private readonly setVoiceEmitter = new vscode.EventEmitter<{ engine: 'system' | 'enhanced'; voice: string }>();
+	private readonly setVolumeEmitter = new vscode.EventEmitter<number>();
 
 	readonly onDidChangeState = this.stateEmitter.event;
 	/** Diagnostics from inside the webview (e.g. audio playback errors) that wouldn't otherwise be visible. */
@@ -84,6 +86,8 @@ export class SpeechPanel {
 	readonly onDidRequestEnhancedVoices = this.requestEnhancedVoicesEmitter.event;
 	/** Fires when a voice is picked from the panel's own Voice popup. */
 	readonly onDidRequestSetVoice = this.setVoiceEmitter.event;
+	/** Fires when the panel's volume control changes (mute toggle or slider release), with the newly picked volume (0-1). */
+	readonly onDidRequestSetVolume = this.setVolumeEmitter.event;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
 		context.subscriptions.push(
@@ -97,7 +101,8 @@ export class SpeechPanel {
 			this.setEngineEmitter,
 			this.setModeEmitter,
 			this.requestEnhancedVoicesEmitter,
-			this.setVoiceEmitter
+			this.setVoiceEmitter,
+			this.setVolumeEmitter
 		);
 	}
 
@@ -122,7 +127,7 @@ export class SpeechPanel {
 	 */
 	speak(text: string, options: SpeakOptions, responseId: number): void {
 		const panel = this.ensurePanel();
-		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice, responseId });
+		void panel.webview.postMessage({ type: 'speak', text, rate: options.rate, voice: options.voice, volume: options.volume, responseId });
 	}
 
 	/**
@@ -140,9 +145,9 @@ export class SpeechPanel {
 	}
 
 	/** Queues pre-synthesized audio (base64-encoded) for playback, e.g. from the Enhanced engine. See speak's doc for `responseId`. */
-	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[], responseId: number): void {
+	playAudio(base64Data: string, rate: number | undefined, text: string, words: WordBoundary[], responseId: number, volume: number): void {
 		const panel = this.ensurePanel();
-		void panel.webview.postMessage({ type: 'playAudio', base64: base64Data, rate, text, words, responseId });
+		void panel.webview.postMessage({ type: 'playAudio', base64: base64Data, rate, text, words, responseId, volume });
 	}
 
 	/**
@@ -174,19 +179,20 @@ export class SpeechPanel {
 		void this.panel?.webview.postMessage({ type: 'resume' });
 	}
 
-	/** Applies a rate/voice change immediately where possible (see class doc). */
+	/** Applies a rate/voice/volume change immediately where possible (see class doc). */
 	updateSettings(options: SpeakOptions): void {
-		void this.panel?.webview.postMessage({ type: 'updateSettings', rate: options.rate, voice: options.voice });
+		void this.panel?.webview.postMessage({ type: 'updateSettings', rate: options.rate, voice: options.voice, volume: options.volume });
 	}
 
-	/** Syncs the panel's own speed/engine/mode controls to the current settings, e.g. after a change made via the settings menu. */
-	updateControlBar(info: { engine: 'system' | 'enhanced'; rate: number; mode: 'auto' | 'manual'; voice: string }): void {
+	/** Syncs the panel's own speed/engine/mode/volume controls to the current settings, e.g. after a change made via the settings menu. */
+	updateControlBar(info: { engine: 'system' | 'enhanced'; rate: number; mode: 'auto' | 'manual'; voice: string; volume: number }): void {
 		void this.panel?.webview.postMessage({
 			type: 'updateControlBar',
 			engine: info.engine,
 			rate: info.rate,
 			mode: info.mode,
-			voice: info.voice
+			voice: info.voice,
+			volume: info.volume
 		});
 	}
 
@@ -262,6 +268,7 @@ export class SpeechPanel {
 				engine?: 'system' | 'enhanced';
 				mode?: 'auto' | 'manual';
 				voice?: string;
+				volume?: number;
 			}) => {
 				if (message?.type === 'voices' && this.pendingVoicesResolve) {
 					const resolve = this.pendingVoicesResolve;
@@ -289,6 +296,8 @@ export class SpeechPanel {
 					this.requestEnhancedVoicesEmitter.fire();
 				} else if (message?.type === 'controlSetVoice' && message.engine && message.voice) {
 					this.setVoiceEmitter.fire({ engine: message.engine, voice: message.voice });
+				} else if (message?.type === 'controlSetVolume' && message.volume !== undefined) {
+					this.setVolumeEmitter.fire(message.volume);
 				}
 			},
 			undefined,
@@ -308,7 +317,8 @@ export class SpeechPanel {
 			engine: initialEngine,
 			rate: config.get<number>('rate', 1),
 			mode: config.get<'auto' | 'manual'>('playbackMode', 'auto'),
-			voice: config.get<string>(initialEngine === 'enhanced' ? 'enhancedVoice' : 'voice', '')
+			voice: config.get<string>(initialEngine === 'enhanced' ? 'enhancedVoice' : 'voice', ''),
+			volume: config.get<number>('volume', 1)
 		});
 		return panel;
 	}
@@ -365,6 +375,11 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     border-radius: 3px;
   }
   #statusBar {
+    /* 4 transport buttons (1.8rem each) + 3 gaps between them (0.3rem each)
+       — shared by #transportButtons and #volumeControl below so the volume
+       control's speaker button and slider stay aligned with the transport
+       row above regardless of either row's own content. */
+    --transport-width: 8.1rem;
     flex-shrink: 0;
     margin-top: 0.85rem;
     padding: 0.7rem 0.85rem;
@@ -383,13 +398,22 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     flex-shrink: 0;
     align-items: center;
     gap: 0.3rem;
+    /* Fixed rather than left to sum-of-children, so #volumeControl below
+       (which shares this variable) is guaranteed to line up with it exactly
+       instead of merely computing to the same value in principle — a native
+       <input type="range">'s own box model isn't as predictable as a
+       button's. */
+    width: var(--transport-width);
   }
   #optionsRow {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.9rem;
-    margin-top: 0.7rem;
+    /* Matches #transportButtons' own gap, so the vertical space between the
+       two rows reads the same as the horizontal space between buttons
+       within the transport row (e.g. Skip Back to Play) above it. */
+    margin-top: 0.3rem;
   }
   #statusBar button {
     flex-shrink: 0;
@@ -411,7 +435,8 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   #statusBar #playPauseBtn,
   #statusBar #stopBtn,
   #statusBar #skipBackBtn,
-  #statusBar #skipForwardBtn {
+  #statusBar #skipForwardBtn,
+  #statusBar #volumeBtn {
     opacity: 1;
     width: 1.8rem;
     height: 1.8rem;
@@ -430,13 +455,15 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   }
   #statusBar #stopBtn,
   #statusBar #skipBackBtn,
-  #statusBar #skipForwardBtn {
+  #statusBar #skipForwardBtn,
+  #statusBar #volumeBtn {
     background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
     color: var(--vscode-foreground);
   }
   #statusBar #stopBtn:hover,
   #statusBar #skipBackBtn:hover,
-  #statusBar #skipForwardBtn:hover {
+  #statusBar #skipForwardBtn:hover,
+  #statusBar #volumeBtn:hover {
     background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.14));
   }
   #optionsRow .ctrl-icon {
@@ -470,6 +497,65 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   #optionsRow .ctrl-trigger.open {
     opacity: 1;
     background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+  /*
+   * Matches --transport-width (see #statusBar) rather than leaving the
+   * speaker button + slider to sum to that width on their own — a native
+   * <input type="range">'s box model isn't as predictable as a button's, so
+   * asserting the total width directly (with the slider as the one flexible
+   * part, via flex: 1 below) is what actually guarantees the speaker button
+   * lines up under Skip Back and the slider spans Play+Skip Forward+Stop.
+   */
+  #optionsRow #volumeControl {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: auto;
+    width: var(--transport-width);
+  }
+  /*
+   * Custom-styled rather than relying on the browser's own accent-color
+   * rendering of a native range input, so the filled portion and thumb are
+   * guaranteed to be the exact same color as the Play button (both read
+   * from the same --vscode-button-background variable) instead of
+   * whatever shade the browser's own accent-color blending happens to
+   * produce. The fill itself is a background gradient recomputed in JS
+   * (see updateSliderFill) each time the value changes.
+   */
+  #volumeSlider {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    min-width: 0;
+    height: 3px;
+    margin: 0;
+    padding: 0;
+    border-radius: 2px;
+    cursor: pointer;
+    /* The browser's own default focus outline hugs the actual <input> box
+       (the thin 3px track), so it read as a distracting orange line the
+       full width of the slider while dragging or focused. A focus ring on
+       just the thumb (below) is a much less jarring way to keep some focus
+       indication for keyboard users instead of dropping it entirely. */
+    outline: none;
+  }
+  #volumeSlider::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 2px;
+    background: transparent;
+  }
+  #volumeSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--vscode-button-background, #0e639c);
+    margin-top: -4.5px;
+    cursor: pointer;
+  }
+  #volumeSlider:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 2px var(--vscode-focusBorder, #0e639c);
   }
   #status { opacity: 0.7; margin: 0; font-size: 0.9rem; }
   .ctrl-popup {
@@ -640,6 +726,12 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
       <span id="modeBtnIcon" class="ctrl-icon codicon codicon-zap" aria-hidden="true"></span>
       <span id="modeBtnLabel">Auto</span>
     </button>
+    <div id="volumeControl">
+      <button id="volumeBtn" type="button" title="Mute">
+        <span id="volumeBtnIcon" class="codicon codicon-unmute" aria-hidden="true"></span>
+      </button>
+      <input id="volumeSlider" type="range" min="0" max="100" value="100" title="Volume" aria-label="Volume">
+    </div>
   </div>
   <div id="unlockPrompt">
     <span>Would you like to enable Enhanced voice for Response Narrator?</span>
@@ -666,6 +758,9 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   const modeBtn = document.getElementById('modeBtn');
   const modeBtnIcon = document.getElementById('modeBtnIcon');
   const modeBtnLabel = document.getElementById('modeBtnLabel');
+  const volumeBtn = document.getElementById('volumeBtn');
+  const volumeBtnIcon = document.getElementById('volumeBtnIcon');
+  const volumeSlider = document.getElementById('volumeSlider');
 
   playPauseBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlPlayPause' }));
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'controlStop' }));
@@ -681,6 +776,82 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
   let currentEngine = 'system';
   let currentMode = 'auto';
   let currentVoice = '';
+  let currentVolume = 1;
+  // Remembered in-memory only (not a persisted setting) so the Mute button
+  // can restore whatever level it was at before muting — matching how
+  // YouTube/Twitch-style mute buttons behave. Defaults to full volume if
+  // muted before ever setting a real level.
+  let volumeBeforeMute = 1;
+
+  // The slider is styled with -webkit-appearance: none (see CSS), which
+  // drops the browser's own accent-color fill entirely, so the "filled up
+  // to the thumb" look is drawn by hand here as a background gradient
+  // instead — using the exact same --vscode-button-background variable as
+  // the Play button and the thumb itself, guaranteeing they're the same
+  // color rather than however the browser's own accent-color blending
+  // would have rendered it.
+  function updateSliderFill(volume) {
+    const percent = Math.round(volume * 100);
+    volumeSlider.style.background =
+      'linear-gradient(to right, var(--vscode-button-background, #0e639c) 0%, var(--vscode-button-background, #0e639c) ' +
+      percent + '%, var(--vscode-scrollbarSlider-background, rgba(255, 255, 255, 0.3)) ' +
+      percent + '%, var(--vscode-scrollbarSlider-background, rgba(255, 255, 255, 0.3)) 100%)';
+  }
+
+  function updateVolumeUi() {
+    volumeSlider.value = String(Math.round(currentVolume * 100));
+    updateSliderFill(currentVolume);
+    volumeBtnIcon.className = 'codicon ' + (currentVolume > 0 ? 'codicon-unmute' : 'codicon-mute');
+    volumeBtn.title = currentVolume > 0 ? 'Mute' : 'Unmute';
+  }
+
+  // Commits a volume change: persists it as a setting (round-tripping
+  // through extension.ts, which also applies it to whatever's currently
+  // playing — see the 'updateSettings' handler below) and updates this
+  // trigger's own icon/slider immediately rather than waiting on that round
+  // trip. Used for both the Mute button (an instant, discrete toggle) and
+  // the slider's 'change' event (fired once when it's released, not on
+  // every intermediate drag position — see volumeSlider's 'input' handler
+  // for the smooth live preview while actually dragging).
+  function commitVolume(volume) {
+    currentVolume = volume;
+    updateVolumeUi();
+    vscode.postMessage({ type: 'controlSetVolume', volume: volume });
+  }
+
+  volumeBtn.addEventListener('click', () => {
+    if (currentVolume > 0) {
+      volumeBeforeMute = currentVolume;
+      commitVolume(0);
+    } else {
+      commitVolume(volumeBeforeMute > 0 ? volumeBeforeMute : 1);
+    }
+  });
+
+  volumeSlider.addEventListener('input', () => {
+    // Live preview while actively dragging: cheap and instant for the
+    // Enhanced engine (audioEl.volume applies immediately, same as
+    // playbackRate), so there's no reason to wait for the 'change' event
+    // just for that case. The System engine can't retune an in-progress
+    // utterance's volume without restarting it (see class doc), which would
+    // be jarring on every pixel of drag, so its update is deferred to
+    // 'change' below, via the same settings round trip rate/voice changes
+    // already use.
+    const volume = Number(volumeSlider.value) / 100;
+    currentVolume = volume;
+    updateSliderFill(volume);
+    volumeBtnIcon.className = 'codicon ' + (volume > 0 ? 'codicon-unmute' : 'codicon-mute');
+    if (volume > 0) {
+      volumeBeforeMute = volume;
+    }
+    if (current && current.kind === 'audio' && audioEl) {
+      current.volume = volume;
+      audioEl.volume = volume;
+    }
+  });
+  volumeSlider.addEventListener('change', () => {
+    commitVolume(Number(volumeSlider.value) / 100);
+  });
 
   const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   const ENGINE_OPTIONS = [
@@ -1389,6 +1560,9 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
         utterance.voice = match;
       }
     }
+    if (item.volume !== undefined) {
+      utterance.volume = item.volume;
+    }
     utterance.onboundary = (e) => {
       if (token !== speakToken) {
         return;
@@ -1426,6 +1600,7 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
           return;
         }
         el.playbackRate = item.rate || 1;
+        el.volume = item.volume !== undefined ? item.volume : 1;
         if (offsetSeconds > 0) {
           el.currentTime = offsetSeconds;
         }
@@ -1683,9 +1858,9 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     if (message.type === 'newResponse') {
       startNewResponseEntry(message.responseId);
     } else if (message.type === 'speak') {
-      enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, charIndex: 0, responseId: message.responseId });
+      enqueue({ kind: 'tts', text: message.text, rate: message.rate, voice: message.voice, volume: message.volume, charIndex: 0, responseId: message.responseId });
     } else if (message.type === 'playAudio') {
-      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0, responseId: message.responseId });
+      enqueue({ kind: 'audio', base64: message.base64, rate: message.rate, text: message.text, words: message.words || [], pausedOffset: 0, responseId: message.responseId, volume: message.volume });
     } else if (message.type === 'enhancedVoiceChanged') {
       if (current && current.kind === 'audio' && !paused) {
         const elapsed = audioEl ? audioEl.currentTime : 0;
@@ -1768,16 +1943,23 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
     } else if (message.type === 'updateSettings') {
       queue.forEach((item) => {
         item.rate = message.rate;
+        item.volume = message.volume;
         if (item.kind === 'tts') {
           item.voice = message.voice;
         }
       });
       if (current && current.kind === 'audio') {
         current.rate = message.rate;
+        current.volume = message.volume;
         if (audioEl) {
           // Live, instant — no restart needed, and preservesPitch keeps
           // this from raising pitch the way it used to (see class doc).
+          // Volume is likewise instant; unlike rate/voice this is also
+          // already applied directly by volumeSlider's own 'input' handler
+          // while actively dragging, so this mostly matters for a mute
+          // toggle or a change made via the settings menu instead.
           audioEl.playbackRate = message.rate || 1;
+          audioEl.volume = message.volume !== undefined ? message.volume : 1;
         }
         // Voice changes apply to the next Enhanced utterance instead, since
         // a different voice means a different synthesized file that would
@@ -1793,6 +1975,7 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
         const wasPaused = paused;
         current.rate = message.rate;
         current.voice = message.voice;
+        current.volume = message.volume;
         speechSynthesis.cancel();
         speakToken++; // invalidate the interrupted utterance's onend/onerror
         if (hasRemaining) {
@@ -1866,6 +2049,13 @@ function buildHtml(cspSource: string, codiconCssUri: string): string {
       if (message.voice !== undefined) {
         currentVoice = message.voice;
         voiceBtnLabel.textContent = friendlyVoiceLabel(message.voice);
+      }
+      if (message.volume !== undefined) {
+        currentVolume = message.volume;
+        if (currentVolume > 0) {
+          volumeBeforeMute = currentVolume;
+        }
+        updateVolumeUi();
       }
     } else if (message.type === 'enhancedVoices') {
       enhancedVoicesCache = message.voices || [];

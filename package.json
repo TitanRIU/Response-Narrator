@@ -2,7 +2,7 @@
   "name": "response-narrator",
   "displayName": "Response Narrator",
   "description": "Reads new Claude Code assistant responses aloud via TTS by watching its session transcript files",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "TitanRIU",
   "license": "MIT",
   "icon": "icon.png",
@@ -92,6 +92,13 @@
           "minimum": 0.5,
           "maximum": 2,
           "description": "Speech rate for narrated responses (1 = normal speed)."
+        },
+        "response-narrator.volume": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Playback volume for narrated responses (1 = full volume, 0 = muted)."
         },
         "response-narrator.voiceEngine": {
           "type": "string",

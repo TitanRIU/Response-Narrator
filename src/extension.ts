@@ -6,6 +6,7 @@ import { listEnhancedVoices, synthesizeSpeech, splitIntoSpeechChunks, DEFAULT_EN
 
 const CONFIG_SECTION = 'response-narrator';
 const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const VOLUME_PRESETS = [0, 0.25, 0.5, 0.75, 1];
 const ISSUES_URL = 'https://github.com/TitanRIU/Response-Narrator/issues';
 // Cap on simultaneous Enhanced synthesis requests when speaking a
 // chunked response. Firing every chunk's request at once for a long
@@ -115,9 +116,10 @@ export function activate(context: vscode.ExtensionContext) {
 			updateMenuStatusBar();
 			if (
 				e.affectsConfiguration(`${CONFIG_SECTION}.rate`) ||
-				e.affectsConfiguration(`${CONFIG_SECTION}.voice`)
+				e.affectsConfiguration(`${CONFIG_SECTION}.voice`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.volume`)
 			) {
-				speechPanel?.updateSettings({ rate: getRate(), voice: getVoiceSetting() || undefined });
+				speechPanel?.updateSettings({ rate: getRate(), voice: getVoiceSetting() || undefined, volume: getVolumeSetting() });
 			}
 			if (e.affectsConfiguration(`${CONFIG_SECTION}.enhancedVoice`)) {
 				speechPanel?.notifyEnhancedVoiceChanged();
@@ -127,14 +129,16 @@ export function activate(context: vscode.ExtensionContext) {
 				e.affectsConfiguration(`${CONFIG_SECTION}.voiceEngine`) ||
 				e.affectsConfiguration(`${CONFIG_SECTION}.playbackMode`) ||
 				e.affectsConfiguration(`${CONFIG_SECTION}.voice`) ||
-				e.affectsConfiguration(`${CONFIG_SECTION}.enhancedVoice`)
+				e.affectsConfiguration(`${CONFIG_SECTION}.enhancedVoice`) ||
+				e.affectsConfiguration(`${CONFIG_SECTION}.volume`)
 			) {
 				const engine = getVoiceEngine();
 				speechPanel?.updateControlBar({
 					engine,
 					rate: getRate(),
 					mode: getPlaybackMode(),
-					voice: engine === 'enhanced' ? getEnhancedVoiceSetting() : getVoiceSetting()
+					voice: engine === 'enhanced' ? getEnhancedVoiceSetting() : getVoiceSetting(),
+					volume: getVolumeSetting()
 				});
 			}
 		}),
@@ -181,6 +185,9 @@ export function activate(context: vscode.ExtensionContext) {
 		speechPanel.onDidRequestSetVoice(({ engine, voice }) => {
 			const key = engine === 'enhanced' ? 'enhancedVoice' : 'voice';
 			void vscode.workspace.getConfiguration(CONFIG_SECTION).update(key, voice, vscode.ConfigurationTarget.Global);
+		}),
+		speechPanel.onDidRequestSetVolume((volume) => {
+			void vscode.workspace.getConfiguration(CONFIG_SECTION).update('volume', volume, vscode.ConfigurationTarget.Global);
 		})
 	);
 
@@ -326,6 +333,7 @@ async function openMenu(): Promise<void> {
 			{ id: 'engine', label: '$(rocket) Voice Engine', description: engine === 'enhanced' ? 'Enhanced' : 'System' },
 			{ id: 'voice', label: '$(mic) Voice', description: voiceLabel },
 			{ id: 'speed', label: '$(zap) Speed', description: `${getRate()}x` },
+			{ id: 'volume', label: '$(unmute) Volume', description: `${Math.round(getVolumeSetting() * 100)}%` },
 			{ id: 'feedback', label: '$(comment) Report Issue / Give Feedback', description: 'Opens GitHub Issues' }
 		],
 		{ placeHolder: 'Response Narrator settings' }
@@ -341,6 +349,8 @@ async function openMenu(): Promise<void> {
 		await selectVoice();
 	} else if (picked.id === 'speed') {
 		await chooseSpeed();
+	} else if (picked.id === 'volume') {
+		await chooseVolume();
 	} else if (picked.id === 'feedback') {
 		await reportIssue();
 	}
@@ -401,6 +411,22 @@ async function chooseSpeed(): Promise<void> {
 		await vscode.workspace
 			.getConfiguration(CONFIG_SECTION)
 			.update('rate', picked.value, vscode.ConfigurationTarget.Global);
+	}
+}
+
+async function chooseVolume(): Promise<void> {
+	const volume = getVolumeSetting();
+	const picked = await vscode.window.showQuickPick(
+		VOLUME_PRESETS.map((value) => ({
+			label: value === volume ? `$(check) ${Math.round(value * 100)}%` : `${Math.round(value * 100)}%`,
+			value
+		})),
+		{ placeHolder: 'Response Narrator: Volume' }
+	);
+	if (picked) {
+		await vscode.workspace
+			.getConfiguration(CONFIG_SECTION)
+			.update('volume', picked.value, vscode.ConfigurationTarget.Global);
 	}
 }
 
@@ -627,12 +653,12 @@ async function speak(text: string, responseId: number): Promise<void> {
 			text,
 			(base64, rate, words) => {
 				if (generation === speechGeneration) {
-					speechPanel?.playAudio(base64, rate, text, words, responseId);
+					speechPanel?.playAudio(base64, rate, text, words, responseId, getVolumeSetting());
 				}
 			},
 			(rate, voice) => {
 				if (generation === speechGeneration) {
-					speechPanel?.speak(text, { rate, voice }, responseId);
+					speechPanel?.speak(text, { rate, voice, volume: getVolumeSetting() }, responseId);
 				}
 			}
 		);
@@ -646,7 +672,7 @@ async function speak(text: string, responseId: number): Promise<void> {
 	// utterance. Sentence-sized utterances keep boundary tracking accurate
 	// and bound any staleness to at most one sentence.
 	for (const chunk of splitIntoSpeechChunks(text)) {
-		speechPanel?.speak(chunk, { rate: getRate(), voice: getVoiceSetting() || undefined }, responseId);
+		speechPanel?.speak(chunk, { rate: getRate(), voice: getVoiceSetting() || undefined, volume: getVolumeSetting() }, responseId);
 	}
 }
 
@@ -671,12 +697,12 @@ async function speakEnhancedInChunks(chunks: string[], generation: number, respo
 				chunk,
 				(base64, rate, words) => {
 					if (generation === speechGeneration) {
-						speechPanel?.playAudio(base64, rate, chunk, words, responseId);
+						speechPanel?.playAudio(base64, rate, chunk, words, responseId, getVolumeSetting());
 					}
 				},
 				(rate, voice) => {
 					if (generation === speechGeneration) {
-						speechPanel?.speak(chunk, { rate, voice }, responseId);
+						speechPanel?.speak(chunk, { rate, voice, volume: getVolumeSetting() }, responseId);
 					}
 				},
 				gate
@@ -713,7 +739,7 @@ async function handleResynthesis(token: number, text: string): Promise<void> {
 					if (isFirst) {
 						speechPanel?.provideResynthesizedAudio(token, base64, rate, chunk, words);
 					} else {
-						speechPanel?.playAudio(base64, rate, chunk, words, activeResponseId);
+						speechPanel?.playAudio(base64, rate, chunk, words, activeResponseId, getVolumeSetting());
 					}
 				},
 				(rate, voice) => {
@@ -723,7 +749,7 @@ async function handleResynthesis(token: number, text: string): Promise<void> {
 					if (isFirst) {
 						speechPanel?.provideResynthesizedFallback(token, chunk, rate, voice);
 					} else {
-						speechPanel?.speak(chunk, { rate, voice }, activeResponseId);
+						speechPanel?.speak(chunk, { rate, voice, volume: getVolumeSetting() }, activeResponseId);
 					}
 				},
 				gate
@@ -745,6 +771,10 @@ function getVoiceEngine(): 'system' | 'enhanced' {
 
 function getRate(): number {
 	return vscode.workspace.getConfiguration(CONFIG_SECTION).get<number>('rate', 1);
+}
+
+function getVolumeSetting(): number {
+	return vscode.workspace.getConfiguration(CONFIG_SECTION).get<number>('volume', 1);
 }
 
 function getVoiceSetting(): string {

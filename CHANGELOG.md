@@ -4,6 +4,12 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.12] - 2026-09-04
+
+### Added
+
+- A Volume control: a Mute button plus a slider, sized and aligned under the transport buttons the same way Skip Back through Stop are. Dragging gives live feedback for the Enhanced engine; the System engine (whose speech volume can't be retuned mid-utterance) picks it up the moment the slider is released instead of mid-drag. Also reachable via the "Response Narrator: Open Menu" command.
+
 ## [0.1.11] - 2026-08-27
 
 ### Added
