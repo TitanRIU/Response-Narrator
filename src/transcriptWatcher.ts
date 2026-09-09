@@ -6,6 +6,14 @@ import { EventEmitter } from 'events';
 import { extractAssistantText, isUserTurnBoundary } from './transcriptParser';
 
 const POLL_INTERVAL_MS = 2000;
+// fs.watch is well known to fire more than once for what's logically a
+// single file change (e.g. a rewrite that truncates then writes isn't
+// necessarily one atomic step on disk) — reading on every single callback
+// risks catching the file mid-rewrite, at a transient size smaller than
+// either its before or after state. Coalescing bursts of change events into
+// one read after they settle avoids stat()ing/reading at exactly the wrong
+// moment.
+const CHANGE_DEBOUNCE_MS = 100;
 
 export interface Utterance {
 	text: string;
@@ -80,11 +88,19 @@ export async function findLatestTranscriptFile(rootDirs: string | string[]): Pro
  * file content — only what's written after watching starts (or after
  * switching to a newly-active session).
  */
+export interface ResyncInfo {
+	filePath: string;
+	previousOffset: number;
+	newOffset: number;
+}
+
 export declare interface TranscriptWatcher {
 	on(event: 'utterance', listener: (utterance: Utterance) => void): this;
 	on(event: 'error', listener: (err: Error) => void): this;
 	on(event: 'sessionChanged', listener: (filePath: string) => void): this;
 	on(event: 'turnBoundary', listener: () => void): this;
+	/** Fires when the watched file shrank (see readNewContent) and reading resumed from its new end instead of replaying it. */
+	on(event: 'resync', listener: (info: ResyncInfo) => void): this;
 }
 
 export class TranscriptWatcher extends EventEmitter {
@@ -94,6 +110,7 @@ export class TranscriptWatcher extends EventEmitter {
 	private pendingPartialLine = '';
 	private fsWatcher: fs.FSWatcher | undefined;
 	private pollTimer: NodeJS.Timeout | undefined;
+	private changeDebounceTimer: NodeJS.Timeout | undefined;
 	private reading = false;
 	private stopped = true;
 
@@ -138,6 +155,10 @@ export class TranscriptWatcher extends EventEmitter {
 			this.fsWatcher.close();
 			this.fsWatcher = undefined;
 		}
+		if (this.changeDebounceTimer) {
+			clearTimeout(this.changeDebounceTimer);
+			this.changeDebounceTimer = undefined;
+		}
 	}
 
 	private async switchTo(filePath: string): Promise<void> {
@@ -152,7 +173,13 @@ export class TranscriptWatcher extends EventEmitter {
 		}
 		try {
 			this.fsWatcher = fs.watch(filePath, () => {
-				this.readNewContent().catch((err) => this.emit('error', err));
+				if (this.changeDebounceTimer) {
+					clearTimeout(this.changeDebounceTimer);
+				}
+				this.changeDebounceTimer = setTimeout(() => {
+					this.changeDebounceTimer = undefined;
+					this.readNewContent().catch((err) => this.emit('error', err));
+				}, CHANGE_DEBOUNCE_MS);
 			});
 			this.fsWatcher.on('error', (err) => this.emit('error', err as Error));
 		} catch (err) {
@@ -186,9 +213,22 @@ export class TranscriptWatcher extends EventEmitter {
 				return;
 			}
 			if (stat.size < this.offset) {
-				// File shrank or was replaced in place; restart from the beginning.
-				this.offset = 0;
+				// The file is now smaller than what's already been read —
+				// almost certainly Claude Code rewrote it in place during
+				// context compaction, which can replace a large stretch of
+				// the transcript with a compacted summary, not a legitimate
+				// reason to start over. Resuming from the new end (the same
+				// treatment switchTo gives an actual session change) instead
+				// of replaying from byte 0 is what avoids flooding the queue
+				// with the file's entire post-compaction content as if it
+				// were all brand new — confirmed in practice as the cause of
+				// entire past conversations (once over 300 messages) being
+				// replayed after a compaction.
+				const previousOffset = this.offset;
+				this.offset = stat.size;
 				this.pendingPartialLine = '';
+				this.emit('resync', { filePath, previousOffset, newOffset: this.offset } satisfies ResyncInfo);
+				return;
 			}
 			if (stat.size === this.offset) {
 				return;

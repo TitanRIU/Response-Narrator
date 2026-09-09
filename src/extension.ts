@@ -258,6 +258,15 @@ async function startWatching(): Promise<void> {
 		speechPanel?.stop();
 		outputChannel.appendLine(`Watching session: ${filePath}`);
 	});
+	newWatcher.on('resync', ({ filePath, previousOffset, newOffset }) => {
+		// The transcript shrank — almost always a context compaction
+		// rewriting it in place (see TranscriptWatcher's own doc). Logged
+		// rather than silent since it's otherwise invisible that the fix for
+		// "compaction replays the whole conversation" actually engaged.
+		outputChannel.appendLine(
+			`Transcript shrank (likely a context compaction), resuming from its new end without replaying: ${filePath} (${previousOffset} -> ${newOffset} bytes)`
+		);
+	});
 
 	const started = await newWatcher.start();
 	if (!started) {
@@ -268,6 +277,13 @@ async function startWatching(): Promise<void> {
 	}
 
 	watcher = newWatcher;
+	// Opens the panel proactively on every activation (rather than waiting
+	// for a click on the status bar item or the first response actually
+	// arriving), so a new user isn't left hunting for where narration
+	// appears. Doesn't steal focus, and only happens once a transcript to
+	// watch was actually found for this workspace, so a window with no
+	// Claude Code activity at all doesn't get an empty panel.
+	speechPanel?.open(true);
 }
 
 function togglePlayback(): void {

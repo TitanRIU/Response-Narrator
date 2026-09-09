@@ -4,6 +4,17 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.13] - 2026-09-09
+
+### Changed
+
+- The Response Narrator panel now opens on its own as soon as a Claude Code transcript is found for the workspace, instead of waiting for a click on the status bar's Narrator item or the first response actually arriving. It doesn't take focus away from whatever you were doing, and a workspace with no Claude Code activity doesn't get an empty panel.
+
+### Fixed
+
+- When Claude Code compacted its context (rewriting the transcript file to something smaller), Response Narrator could mistake that for "start over" and replay the entire rewritten transcript as if every message in it were brand new, in practice anywhere from a few dozen to 300+ messages queued up at once. It now resumes from the file's new end instead, the same as switching to a different session, so a compaction is never replayed.
+- A related, narrower timing issue: a rewrite that isn't a single atomic disk write (e.g. truncate-then-write) could occasionally be caught mid-write, at a transient size the reader hadn't actually reached yet. File-change events are now briefly debounced so a burst of rapid changes settles before anything is read.
+
 ## [0.1.12] - 2026-09-04
 
 ### Added

@@ -111,9 +111,15 @@ export class SpeechPanel {
 		this.panel?.reveal(undefined, false);
 	}
 
-	/** Opens the panel (creating it if needed) and brings it to the foreground, e.g. from the status bar item. */
-	open(): void {
-		this.ensurePanel().reveal(undefined, false);
+	/**
+	 * Opens the panel (creating it if needed) and brings it to the
+	 * foreground, e.g. from the status bar item. `preserveFocus` defaults to
+	 * false (steals focus) since a click is a deliberate request to look at
+	 * the panel — pass true for an automatic open (e.g. on activation) that
+	 * shouldn't yank focus away from whatever the user was already doing.
+	 */
+	open(preserveFocus = false): void {
+		this.ensurePanel().reveal(undefined, preserveFocus);
 	}
 
 	/**

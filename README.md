@@ -8,16 +8,16 @@ If you find this useful, consider [sponsoring on GitHub](https://github.com/spon
 
 ## Getting Started
 
-1. Install the extension. It activates automatically and starts watching your Claude Code session transcripts. No setup required.
+1. Install the extension. It activates automatically, starts watching your Claude Code session transcripts, and opens the Response Narrator panel on its own once it finds one, without stealing focus from what you're doing. No setup required.
 2. By default it's in **Auto** mode: new Claude Code responses are read aloud as they arrive.
-3. Click **Narrator** in the status bar (bottom right of the window) to open the Response Narrator panel. Or use the keyboard shortcuts, `Ctrl+Alt+P` to play/pause and `Ctrl+Alt+S` to stop, from anywhere.
+3. If you close the panel, click **Narrator** in the status bar (bottom right of the window) to reopen it. Or use the keyboard shortcuts, `Ctrl+Alt+P` to play/pause and `Ctrl+Alt+S` to stop, from anywhere.
 4. The panel has its own control bar at the bottom: **Skip Back**, **Play/Pause**, **Skip Forward**, and **Stop** buttons, a **Volume** mute button and slider, plus **Speed**, **Voice Engine** (System or Enhanced), **Voice**, and **Playback** mode (Auto or Manual), each opening a small popup to change it on the spot. Skip Back/Forward step through the current response's paragraphs one at a time, moving into the next or previous response once you reach either end. The same settings (Speed, Voice Engine, Voice, Playback mode, and Volume), plus Report Issue / Give Feedback, are also reachable via the "Response Narrator: Open Menu" command.
 5. Switch to **Manual** mode if you'd rather only hear a response when you press Play, on demand.
 6. The first time you use the **Enhanced** voice engine, you'll see a one-time prompt in the Response Narrator panel. Click **Enable** there to unlock audio playback (a one-time browser security requirement, not needed again after that).
 
 ## Features
 
-- Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode.
+- Watches your Claude Code session transcripts and reads new assistant responses aloud as they arrive, or only on demand, depending on Playback mode. The panel opens on its own as soon as a transcript is found, so there's nothing to hunt for.
 - Two voice engines: **System** (built-in OS voices: instant, works offline) and **Enhanced** (higher-quality neural voices via Microsoft Edge's online text-to-speech service), with automatic fallback to System if Enhanced is unavailable.
 - Live word-by-word highlighting in the Response Narrator panel, synced to whichever engine is speaking.
 - The transcript stays visible and scrollable across the current response and the last few before it, instead of disappearing after each chunk. Click any word to replay from that exact point.
