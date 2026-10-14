@@ -4,6 +4,16 @@ All notable changes to the "response-narrator" extension will be documented in t
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [Unreleased]
+
+### Changed
+
+- When the Enhanced voice fails because Microsoft changed how its voice service authenticates (a 403 response), the warning now says so and that an extension update is needed, with a **Check for Updates** button. Other failures, like timeouts or no network, still show the general "unavailable right now" warning.
+
+### Fixed
+
+- The Enhanced voice stopped working entirely, falling back to the System voice on every response, after Microsoft changed the voice service's authentication. Updated the `msedge-tts` library from 2.0.7 to 2.1.0, which uses the new scheme.
+
 ## [0.1.13] - 2026-09-09
 
 ### Changed

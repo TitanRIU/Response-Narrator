@@ -644,9 +644,24 @@ async function synthesizeWithFallback(
 		outputChannel.appendLine(`Enhanced voice failed, falling back to System voice: ${message}`);
 		if (!enhancedFailureWarned) {
 			enhancedFailureWarned = true;
-			void vscode.window.showWarningMessage(
-				'Response Narrator: Enhanced voice is unavailable right now, falling back to System voice.'
-			);
+			// A 403 means Microsoft changed how the Edge voice service
+			// authenticates, which only a newer build of the extension fixes.
+			if (/\b403\b/.test(message)) {
+				void vscode.window
+					.showWarningMessage(
+						'Response Narrator: Microsoft changed the Enhanced voice service, so it needs an extension update. Falling back to System voice until then.',
+						'Check for Updates'
+					)
+					.then((choice) => {
+						if (choice) {
+							void vscode.commands.executeCommand('workbench.extensions.action.checkForUpdates');
+						}
+					});
+			} else {
+				void vscode.window.showWarningMessage(
+					'Response Narrator: Enhanced voice is unavailable right now, falling back to System voice.'
+				);
+			}
 		}
 		if (waitFor) {
 			await waitFor.catch(() => undefined);
